@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Symbiote | DS</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100%;
+            background-color: #000;
+        }
+        /* This is the main p5 canvas */
+        #defaultCanvas0 {
+            display: block;
+        }
+        /* This is the webcam preview canvas */
+        #previewCanvas {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 240px;
+            height: 180px;
+            border-radius: 10px;
+            z-index: 100;
+            filter: grayscale(0.8) contrast(190%);
+            transition: filter 0.5s ease;
+        }
+        .input_video {
+            display: none;
+        }
+        
+        /* Recording UI Styles */
+        #recordingUI {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .recording-btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        #startRecordBtn {
+            background-color: #000000;
+            color: white;
+        }
+        
+        #startRecordBtn:hover {
+            background-color: #110101;
+        }
+        
+        #stopRecordBtn {
+            background-color: #000000;
+            color: black;
+            display: none;
+        }
+        
+        #stopRecordBtn:hover {
+            background-color: #000000;
+        }
+        
+        #recordingStatus {
+            background-color: rgba(255, 255, 255, 0.9);
+            color: black;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 12px;
+            display: none;
+        }
+        
+        .recording-pulse {
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        #downloadLink {
+            display: none;
+            background-color: #4444ff;
+            color: white;
+            text-decoration: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 14px;
+            text-align: center;
+            transition: background-color 0.3s ease;
+        }
+        
+        #downloadLink:hover {
+            background-color: #3333cc;
+        }
+    </style>
+</head>
+<body>
+    <video class="input_video"></video>
+    <main></main>
+    <canvas id="previewCanvas" width="640px" height="480px"></canvas>
+    
+    <!-- Recording UI -->
+    <div id="recordingUI">
+        <button id="startRecordBtn" class="recording-btn">.</button>
+        <button id="stopRecordBtn" class="recording-btn">-</button>
+        <div id="recordingStatus">Recording... <span id="recordingTime">00:00</span></div>
+        <a id="downloadLink" class="recording-btn">↧</a>
+    </div>
+
+    <script>
+        // ——— SETTINGS ———
+        const numParticles = 4500;
+        const particleSize = 1.5;
+        const noiseSpeed = 0.005;
+        const audioFile = 'media/impacto.mp3';
+        const initialSphereRadius = 230;
+        
+        // --- Global Variables ---
+        let particles = [];
+        let song;
+        let fft;
+        let audioLoaded = false;
+        let hasStarted = false;
+        let noiseTime = 0;
+
+        // --- Hand Tracking and Gesture Variables ---
+        let videoElement;
+        let hands;
+        let handTarget = null;
+        let previewCanvas, previewCtx;
+        let handAttractionStrength = 0;
+        let handRepulsionStrength = 0;
+        let isFist = false;
+        let isThreeFingersUp = false;
+        let isTwoFingersUp = false;
+        let flash = 0;
+        
+        // --- Feature Variables ---
+        let vortexActive = false;
+        let sphereMode = 1;
+        let logoElement;
+        const filters = [
+            'grayscale(0.8) contrast(190%)', 
+            'grayscale(0) contrast(150%)', 
+            'invert(1)', 
+            'blur(8px) contrast(130%)'
+        ];
+        let filterIndex = 0;
+
+        // --- Ambient Light Variables ---
+        let leftAmbientStrength = 0;
+        let rightAmbientStrength = 0;
+        const ambientLightFadeSpeed = 6;
+        
+        // --- SCREEN RECORDING VARIABLES ---
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let isRecording = false;
+        let recordingStartTime = 0;
+        let recordingTimer = null;
+        
+        function preload() {
+            song = loadSound(audioFile, 
+                () => { audioLoaded = true; console.log("Audio loaded successfully."); },
+                (err) => { console.error("Failed to load audio:", err); }
+            );
+        }
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight, WEBGL);
+            
+            for (let i = 0; i < numParticles; i++) {
+                particles.push(new Particle());
+            }
+
+            fft = new p5.FFT(0.8, 128);
+            fft.setInput(song);
+
+            setupHandTracking();
+            setupLogo();
+            setupRecording(); // Initialize recording functionality
+        }
+
+        function setupLogo() {
+            logoElement = createImg('media/eye.png', 'eye logo');
+            logoElement.style('position', 'absolute');
+            logoElement.style('top', '50%');
+            logoElement.style('left', '50%');
+            logoElement.style('transform', 'translate(-50%, -50%)');
+            logoElement.style('z-index', '999');
+            logoElement.style('width', '90px');
+            logoElement.style('opacity', '0');
+            logoElement.style('pointer-events', 'none');
+            logoElement.style('transition', 'opacity 0.3s ease-in-out');
+        }
+        
+        function setupHandTracking() {
+            videoElement = document.querySelector('.input_video');
+            previewCanvas = document.getElementById('previewCanvas');
+            previewCtx = previewCanvas.getContext('2d');
+            
+            hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            hands.onResults(onHandResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({ image: videoElement });
+                },
+                width: 640,
+                height: 480
+            });
+            camera.start();
+        }
+
+        // --- SCREEN RECORDING SETUP ---
+        function setupRecording() {
+            const startBtn = document.getElementById('startRecordBtn');
+            const stopBtn = document.getElementById('stopRecordBtn');
+            
+            startBtn.addEventListener('click', startRecording);
+            stopBtn.addEventListener('click', stopRecording);
+        }
+        
+        async function startRecording() {
+            try {
+                // Get display media (screen capture)
+                const displayStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        mediaSource: 'screen',
+                        width: { ideal: 1920, max: 1920 },
+                        height: { ideal: 1080, max: 1080 },
+                        frameRate: { ideal: 30, max: 60 }
+                    },
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+                
+                // Get microphone audio (optional - for commentary)
+                let micStream = null;
+                try {
+                    micStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
+                    });
+                } catch (err) {
+                    console.warn('Microphone access denied or not available:', err);
+                }
+                
+                // Combine streams
+                const combinedStream = new MediaStream();
+                
+                // Add video track from display
+                displayStream.getVideoTracks().forEach(track => {
+                    combinedStream.addTrack(track);
+                });
+                
+                // Add audio tracks (system audio from display stream)
+                displayStream.getAudioTracks().forEach(track => {
+                    combinedStream.addTrack(track);
+                });
+                
+                // Add microphone audio if available
+                if (micStream) {
+                    micStream.getAudioTracks().forEach(track => {
+                        combinedStream.addTrack(track);
+                    });
+                }
+                
+                // Create MediaRecorder with optimized settings for performance
+                const options = {
+                    mimeType: 'video/webm;codecs=vp8,opus', // VP8 is less CPU intensive than VP9
+                    videoBitsPerSecond: 2500000, // 2.5 Mbps - good quality but not too heavy
+                    audioBitsPerSecond: 128000   // 128 kbps audio
+                };
+                
+                // Fallback for different browser support
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options.mimeType = 'video/webm';
+                }
+                
+                mediaRecorder = new MediaRecorder(combinedStream, options);
+                recordedChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    const downloadLink = document.getElementById('downloadLink');
+                    downloadLink.href = url;
+                    downloadLink.download = `audiovisualizer_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.webm`;
+                    downloadLink.style.display = 'block';
+                    
+                    // Clean up streams
+                    displayStream.getTracks().forEach(track => track.stop());
+                    if (micStream) {
+                        micStream.getTracks().forEach(track => track.stop());
+                    }
+                };
+                
+                // Handle user stopping screen share
+                displayStream.getVideoTracks()[0].onended = () => {
+                    if (isRecording) {
+                        stopRecording();
+                    }
+                };
+                
+                // Start recording
+                mediaRecorder.start(1000); // Collect data every 1000ms
+                isRecording = true;
+                recordingStartTime = Date.now();
+                
+                // Update UI
+                document.getElementById('startRecordBtn').style.display = 'none';
+                document.getElementById('stopRecordBtn').style.display = 'block';
+                document.getElementById('recordingStatus').style.display = 'block';
+                document.getElementById('downloadLink').style.display = 'none';
+                
+                // Start timer
+                recordingTimer = setInterval(updateRecordingTimer, 1000);
+                
+                console.log('Recording started successfully');
+                
+            } catch (err) {
+                console.error('Error starting recording:', err);
+                alert('Could not start recording. Please make sure you grant screen sharing permissions.');
+            }
+        }
+        
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                
+                // Update UI
+                document.getElementById('startRecordBtn').style.display = 'block';
+                document.getElementById('stopRecordBtn').style.display = 'none';
+                document.getElementById('recordingStatus').style.display = 'none';
+                
+                // Stop timer
+                if (recordingTimer) {
+                    clearInterval(recordingTimer);
+                    recordingTimer = null;
+                }
+                
+                console.log('Recording stopped');
+            }
+        }
+        
+        function updateRecordingTimer() {
+            if (isRecording) {
+                const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+                const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+                const seconds = (elapsed % 60).toString().padStart(2, '0');
+                document.getElementById('recordingTime').textContent = `${minutes}:${seconds}`;
+            }
+        }
+
+        function onHandResults(results) {
+            previewCtx.save();
+            previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            previewCtx.translate(previewCanvas.width, 0);
+            previewCtx.scale(-1, 1);
+            previewCtx.drawImage(results.image, 0, 0, previewCanvas.width, previewCanvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                drawConnectors(previewCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 0.1});
+                drawLandmarks(previewCtx, landmarks, {color: '#FF0000', lineWidth: 0.1});
+                
+                const indexFinger = landmarks[8];
+                const thumb = landmarks[4];
+                const rawMidX = (indexFinger.x + thumb.x) / 2;
+                const midY = (indexFinger.y + thumb.y) / 2;
+                const depthZ = indexFinger.z;
+
+                const targetX = map(rawMidX, 0, 1, width / 2, -width / 2);
+                const targetY = map(midY, 0, 1, -height / 2, height / 2);
+                
+                handTarget = createVector(targetX, targetY, 0);
+                
+                detectGestures(landmarks);
+
+                handRepulsionStrength = map(depthZ, -0.2, 0.0, 10, 0, true);
+                handAttractionStrength = map(depthZ, -0.2, 0.0, 0, 1.3, true); 
+
+            } else {
+                handTarget = null;
+                isFist = false;
+                isThreeFingersUp = false;
+                isTwoFingersUp = false;
+            }
+            previewCtx.restore();
+        }
+        
+        function detectGestures(landmarks) {
+            const palmCenter = landmarks[0];
+            const fingerTips = [landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+            let totalDistance = 0;
+            for(let tip of fingerTips) { totalDistance += dist(tip.x, tip.y, palmCenter.x, palmCenter.y); }
+            const wasFist = isFist;
+            isFist = (totalDistance / fingerTips.length) < 0.1;
+
+            if (isFist && !wasFist) {
+                flash = 255;
+                for(let p of particles) {
+                    let explosionVec = p5.Vector.sub(p.pos, handTarget);
+                    explosionVec.setMag(25);
+                    p.vel.add(explosionVec);
+                }
+            }
+            
+            const thumbTip = landmarks[4];
+            const thumbIp = landmarks[3];
+            const indexTip = landmarks[8];
+            const indexPip = landmarks[6];
+            const middleTip = landmarks[12];
+            const middlePip = landmarks[10];
+            const ringTip = landmarks[16];
+            const ringPip = landmarks[14];
+            const pinkyTip = landmarks[20];
+            const pinkyPip = landmarks[18];
+
+            const isThumbUp = thumbTip.y < thumbIp.y;
+            const isIndexUp = indexTip.y < indexPip.y;
+            const isMiddleUp = middleTip.y < middlePip.y;
+            const isRingUp = ringTip.y < ringPip.y;
+            const isPinkyUp = pinkyTip.y < pinkyPip.y;
+
+            isThreeFingersUp = isThumbUp && isIndexUp && isMiddleUp && !isRingUp && !isPinkyUp && !isFist;
+            isTwoFingersUp = !isThumbUp && isIndexUp && isMiddleUp && !isRingUp && !isPinkyUp && !isFist;
+        }
+
+        function draw() {
+            if(flash > 0) {
+                background(flash);
+                flash -= 25;
+            } else {
+                background(0);
+            }
+            
+            if (!hasStarted) {
+                fill(255);
+                textAlign(CENTER, CENTER);
+                textSize(24);
+                text("Tap or Click to Begin", 0, 0);
+                return;
+            }
+
+            drawAmbientLights();
+
+            if (vortexActive) {
+                drawVortex();
+            }
+
+            let bassForce = 0, midForce = 0, trebleForce = 0;
+            if (audioLoaded && song.isPlaying()) {
+                fft.analyze();
+                bassForce = map(fft.getEnergy("bass"), 0, 255, 0, 3.5);
+                midForce = map(fft.getEnergy("mid"), 0, 255, 0, 1.5);
+                trebleForce = map(fft.getEnergy("treble"), 0, 255, 0, 1.0);
+            }
+            
+            stroke(255);
+            strokeWeight(particleSize);
+            beginShape(POINTS);
+            
+            if(song.isPlaying()){
+                noiseTime += noiseSpeed;
+            }
+
+            for (let p of particles) {
+                p.applyForces(bassForce, midForce, trebleForce);
+                p.update(bassForce);
+                p.checkBounds();
+                p.show();
+            }
+            endShape();
+
+            if (handTarget) {
+                push();
+                translate(handTarget.x, handTarget.y, handTarget.z);
+                noFill();
+                stroke(128, 128, 128, 128); 
+                strokeWeight(0.1);
+                sphere(10); 
+                pop();
+            }
+        }
+
+        function drawAmbientLights() {
+            if (leftAmbientStrength <= 0 && rightAmbientStrength <= 0) {
+                return;
+            }
+
+            push();
+            ortho(-width / 2, width / 2, -height / 2, height / 2, 0, 1000);
+            translate(-width / 2, -height / 2);
+
+            noStroke();
+
+            if (leftAmbientStrength > 0) {
+                for (let i = 0; i < 200; i++) {
+                    let alpha = leftAmbientStrength * (1 - i / 200);
+                    fill(255, 255, 255, alpha);
+                    rect(i, 0, 1, height);
+                }
+                leftAmbientStrength = max(0, leftAmbientStrength - ambientLightFadeSpeed);
+            }
+
+            if (rightAmbientStrength > 0) {
+                for (let i = 0; i < 200; i++) {
+                    let alpha = rightAmbientStrength * (1 - i / 200);
+                    fill(255, 255, 255, alpha);
+                    rect(width - 1 - i, 0, 1, height);
+                }
+                rightAmbientStrength = max(0, rightAmbientStrength - ambientLightFadeSpeed);
+            }
+            
+            pop();
+        }
+
+        function drawVortex() {
+            push();
+            noFill();
+            strokeWeight(1.5);
+            let vortexRadius = width * 1;
+            let angle = frameCount * 0.38; 
+            for (let i = 0; i < 50; i++) {
+                let alpha = map(i, 0, 50, 90, 0);
+                stroke(255, alpha);
+
+                let r1 = map(i, 0, 50, vortexRadius, 0);
+                let r2 = map(i + 1, 0, 50, vortexRadius, 0);
+                
+                beginShape();
+                for (let a = 0; a < TWO_PI; a += PI / 3) {
+                    let x1 = cos(a + angle) * r1;
+                    let y1 = sin(a + angle) * r1;
+                    vertex(x1, y1);
+
+                    let x2 = cos(a + angle + PI / 6) * r2;
+                    let y2 = sin(a + angle + PI / 6) * r2;
+                    vertex(x2, y2);
+                }
+                endShape(CLOSE);
+                angle *= 0.95;
+            }
+            pop();
+        }
+
+        function startExperience() {
+             if (audioLoaded && !hasStarted) {
+                userStartAudio().then(() => {
+                    song.loop();
+                    hasStarted = true;
+                });
+            }
+        }
+        
+        function mousePressed() { startExperience(); }
+        function touchStarted() { startExperience(); return false; }
+        function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+        
+        function keyPressed() {
+            if (keyCode === 32 && hasStarted) {
+                if (song.isPlaying()) { song.pause(); } else { song.play(); }
+            }
+            if (key === '1') {
+                vortexActive = !vortexActive;
+            }
+            if (key === '2') {
+                sphereMode = (sphereMode === 1) ? 2 : 1;
+                const sphereOffset = initialSphereRadius * 0.8;
+                for(let p of particles) {
+                    if (sphereMode === 1) {
+                         p.initialPos = p5.Vector.random3D().mult(initialSphereRadius);
+                    } else {
+                        let center = (p.id < numParticles / 2) 
+                            ? createVector(-sphereOffset, 0, 0) 
+                            : createVector(sphereOffset, 0, 0);
+                        p.initialPos = p5.Vector.add(center, p5.Vector.random3D().mult(initialSphereRadius * 0.5));
+                    }
+                }
+            }
+            if (key === 'q' || key === 'Q') {
+                logoElement.style('opacity', '1');
+                setTimeout(() => { logoElement.style('opacity', '0'); }, 400);
+            }
+            if (key === 'w' || key === 'W') {
+                filterIndex = (filterIndex + 1) % filters.length;
+                previewCanvas.style.filter = filters[filterIndex];
+            }
+            if (key === 'a' || key === 'A') {
+                leftAmbientStrength = 50;
+            }
+            if (key === 's' || key === 'S') {
+                rightAmbientStrength = 50;
+            }
+            
+            // --- NEW RECORDING SHORTCUTS ---
+            if (key === 'r' || key === 'R') {
+                if (!isRecording) {
+                    startRecording();
+                } else {
+                    stopRecording();
+                }
+            }
+        }
+
+        class Particle {
+            constructor() {
+                this.id = particles.length;
+                this.initialPos = p5.Vector.random3D().mult(initialSphereRadius);
+                this.pos = this.initialPos.copy();
+                this.vel = createVector();
+                this.acc = createVector();
+                this.maxSpeed = 4;
+                this.sphereTargetVector = p5.Vector.random3D();
+            }
+
+            applyForces(bassForce, midForce, trebleForce) {
+                if (handTarget) {
+                    let finalNoiseMag = 0.05;
+                    
+                    if (isThreeFingersUp || isTwoFingersUp) {
+                        let pulseRadius = map(bassForce, 0, 2.5, 100, 200);
+                        let spherePoint = this.sphereTargetVector.copy().mult(pulseRadius);
+                        let target = p5.Vector.add(handTarget, spherePoint);
+                        let attraction = p5.Vector.sub(target, this.pos);
+                        attraction.setMag(2.0);
+                        this.acc.add(attraction);
+                    } else if (!isFist) {
+                        let attraction = p5.Vector.sub(handTarget, this.pos);
+                        attraction.setMag(handAttractionStrength * 2); 
+                        this.acc.add(attraction);
+                        
+                        let repulsion = p5.Vector.sub(this.pos, handTarget);
+                        let distance = repulsion.mag();
+                        if (distance < 250) {
+                           let repelForce = map(distance, 0, 250, handRepulsionStrength, 0);
+                           repulsion.setMag(repelForce);
+                           this.acc.add(repulsion);
+                        }
+                    }
+                    let noiseForce = this.getNoiseVector(finalNoiseMag, midForce, bassForce);
+                    this.acc.add(noiseForce);
+
+                } else {
+                    let returnForce = p5.Vector.sub(this.initialPos, this.pos);
+                    returnForce.mult(0.2);
+                    this.acc.add(returnForce);
+                    
+                    let noiseForce = this.getNoiseVector(0.05, midForce, bassForce);
+                    this.acc.add(noiseForce);
+                }
+
+                if (trebleForce > 0.1) {
+                    let vibration = p5.Vector.random3D().mult(trebleForce * 0.5);
+                    this.acc.add(vibration);
+                }
+            }
+
+            getNoiseVector(magnitude, midForce, bassForce) {
+                let noiseScale = 0.007;
+                let t = noiseTime;
+                let noiseX = map(noise(this.pos.y * noiseScale, this.pos.z * noiseScale, t), 0, 1, -1, 1);
+                let noiseY = map(noise(this.pos.x * noiseScale, this.pos.z * noiseScale, t), 0, 1, -1, 1);
+                let noiseZ = map(noise(this.pos.x * noiseScale, this.pos.y * noiseScale, t), 0, 1, -1, 1);
+                let noiseForce = createVector(noiseX, noiseY, noiseZ);
+                noiseForce.setMag(magnitude + midForce * 0.2);
+                const bassBoost = map(bassForce, 0, 2.5, 1, 3);
+                noiseForce.mult(bassBoost);
+                return noiseForce;
+            }
+
+            update(bassForce) {
+                if (handTarget) {
+                    this.vel.mult(0.95);
+                } else {
+                    this.vel.mult(0.97);
+                }
+
+                this.maxSpeed = map(bassForce, 0, 2.5, 4, 12);
+                this.vel.add(this.acc);
+                this.vel.limit(this.maxSpeed);
+                this.pos.add(this.vel);
+                this.acc.mult(0);
+            }
+
+            checkBounds() {
+                const boundaryX = width / 2;
+                const boundaryY = height / 2;
+                const boundaryZ = width / 2;
+                const turnForce = 0.5;
+
+                if (abs(this.pos.x) > boundaryX) {
+                    let steer = createVector(-this.pos.x, 0, 0);
+                    steer.setMag(turnForce);
+                    this.acc.add(steer);
+                }
+                if (abs(this.pos.y) > boundaryY) {
+                    let steer = createVector(0, -this.pos.y, 0);
+                    steer.setMag(turnForce);
+                    this.acc.add(steer);
+                }
+                if (abs(this.pos.z) > boundaryZ) {
+                    let steer = createVector(0, 0, -this.pos.z);
+                    steer.setMag(turnForce);
+                    this.acc.add(steer);
+                }
+            }
+            
+            show() {
+                vertex(this.pos.x, this.pos.y, this.pos.z);
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Symbiote | DS</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Special+Gothic+Expanded+One&display=swap" rel="stylesheet">
+    <!-- p5.js libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+    <!-- p5.easycam for 3D camera controls -->
+    <script src="https://cdn.jsdelivr.net/npm/p5.easycam@1.0.0/p5.easycam.min.js"></script>
+    <style>
+        *{font-family: 'Special Gothic Expanded One', sans-serif !important;}
+        /* Basic CSS for a clean, dark, fullscreen look */
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            height: 100%;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Inter', sans-serif;
+            cursor: none; 
+        }
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+        /* Custom circular cursor */
+        .custom-cursor {
+            width: 20px;
+            height: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            position: fixed;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 9999;
+            transition: transform 0.1s ease-out;
+        }
+        /* Styling for the initial prompt */
+        #controls {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            background-color: #000;
+            padding: 40px;
+            border-radius: 50%;
+            width: 300px;
+            height: 300px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            cursor: pointer;
+        }
+        #controls img {
+             width: 50px;
+             margin-bottom: 20px;
+        }
+        h1 {
+            margin-top: 0;
+            font-size: 1.2em;
+            font-weight: 300;
+            line-height: 1.4;
+        }
+        /* Hides the start prompt once the animation begins */
+        body.playing #controls {
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+            pointer-events: none;
+        }
+        /* Record button styling */
+        #record-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 20;
+            padding: 10px 15px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            opacity: 0;
+        }
+        body.playing #record-button {
+            opacity: 0;
+        }
+        #record-button.recording {
+             background-color: #c00;
+             color: white;
+        }
+        /* Lyrics container styling */
+        #lyrics-container {
+            position: absolute;
+            text-align: center;
+            top: 50px;
+            left: 0%;
+            z-index: 20;
+            font-size: 2.5em;
+            font-weight: 400;
+            color: rgba(255, 255, 255, 0.956);
+            width: 100%;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8);
+            transition: opacity 0.5s, transform 0.8s ease-out;
+            opacity: 0;
+        }
+        body.playing #lyrics-container {
+            opacity: 1;
+        }
+        #lyrics-container.new-line {
+            transform: translateY(-5px);
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="custom-cursor"></div>
+    <main></main>
+    <div id="controls">
+        <img src="media/eye.png" alt="Eye Icon">
+        <h1>Generative Symbiote Audiovisualizer by DS</h1>
+    </div>
+    <button id="record-button" disabled>Record</button>
+    <!-- New element for displaying lyrics -->
+    <div id="lyrics-container"></div>
+
+    <script>
+        // ——— SETTINGS ———
+        const defaultNumParticles = 8500;
+        const chaosNumParticles = Math.floor(defaultNumParticles * 1.5); // For 'S' key chaos mode
+        const particleSize = 1.5;
+        const sphereRadius = 250;
+        const centralGravityStrength = 0.105;
+        const noiseSpeed = 0.005;
+        // NOTE: The audio file has been updated to "Forever" by Labrinth.
+        const audioFile = 'media/forever.mp3';
+
+        // --- LYRICS DATA ---
+        // Timestamps (in seconds) and text for the song "Forever" by Labrinth
+        const lyrics = [
+            { time: 0, text: "" },
+            { time: 14, text: "Some things just aren't that simple" },
+            { time: 18, text: "You called me wondering why I changed" },
+            { time: 22, text: "Or why I don't look the same" },
+            { time: 24, text: "Why I think so differently now" },
+            { time: 28, text: "Why I think so differently now" },
+            { time: 31, text: "Why I think so differently now" },
+            { time: 35, text: "(Differently now, differently now)" },
+            { time: 38, text: "(Why I think so differently now)" },
+            { time: 42, text: "Is it ever gonna change? Am I gonna feel this way forever?" },
+            { time: 46, text: "Are you gonna be around for me to count on? Count on" },
+            { time: 49, text: "On-on-on, on-on-on-on-on" },
+            { time: 60, text: "" }, // Clear lyrics after drop
+            { time: 78, text: "Some things just never seem to fade" },
+            { time: 82, text: "I'm thinking about how we were on our first date" },
+            { time: 85, text: "You understood the words I was saying" },
+            { time: 89, text: "I knew I'd never let you get away" },
+            { time: 92, text: "Hold you tight, squeeze you right, tell you what I want" },
+            { time: 95, text: "Put me in your bedroom and I'll sing a little song" },
+            { time: 99, text: "Hold you tight, squeeze you right, give you all I've got" },
+            { time: 102, text: "See you in the morning, over coffee, we'll talk, oh" },
+            { time: 106, text: "Is it ever gonna change? Am I gonna feel this way forever?" },
+            { time: 109, text: "Are you gonna be around for me to count on? Count on" },
+            { time: 113, text: "On-on-on, on-on-on-on-on" },
+            { time: 117, text: "" }, // Clear lyrics after drop
+            { time: 152, text: "(On-on-on, on-on-on-on-on)" },
+            { time: 157, text: "" } // End of song
+        ];
+
+        // --- Global Variables ---
+        let particles = [];
+        let song;
+        let fft;
+        let audioLoaded = false;
+        let hasStarted = false;
+        let sceneRotationX = 0, sceneRotationY = 0;
+        let noiseTime = 0;
+
+        // --- Interactive State Variables ---
+        let isChaosMode = false;     // 'S' key
+        let isFadeMode = false;      // 'D' key
+        let isCollapseMode = false;  // 'F' key
+        let particleAlpha = 255;     // For fade effect
+
+        // --- Recording Variables ---
+        let mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+
+        function preload() {
+            song = loadSound(
+                audioFile, 
+                () => { audioLoaded = true; console.log("Audio loaded successfully."); },
+                (err) => { console.error("Failed to load audio:", err); }
+            );
+        }
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight, WEBGL);
+            
+            let cam = createEasyCam();
+            cam.setDistance(sphereRadius * 2.5);
+
+            for (let i = 0; i < chaosNumParticles; i++) {
+                particles.push(new Particle());
+            }
+
+            fft = new p5.FFT(0.8, 128);
+            fft.setInput(song);
+
+            document.getElementById('controls').addEventListener('click', startExperience);
+            document.getElementById('record-button').addEventListener('click', toggleRecording);
+            const cursor = document.querySelector('.custom-cursor');
+            window.addEventListener('mousemove', e => {
+                cursor.style.top = e.clientY + 'px';
+                cursor.style.left = e.clientX + 'px';
+            });
+        }
+
+        function draw() {
+            background(0);
+            if (!hasStarted) return;
+            
+            rotateX(sceneRotationX);
+            rotateY(sceneRotationY);
+            
+            if (song.isPlaying()) {
+                sceneRotationX += 0.0005;
+                sceneRotationY += 0.001;
+                updateLyrics(); // New function call to handle lyrics sync
+            }
+
+            let bass = 0, mid = 0, treble = 0;
+            if (audioLoaded && song.isPlaying()) {
+                fft.analyze();
+                bass = fft.getEnergy("bass");
+                mid = fft.getEnergy("mid");
+                treble = fft.getEnergy("treble");
+            }
+            
+            push();
+            noFill();
+            stroke(80, 80, 80, 150); 
+            strokeWeight(0.03);
+            sphere(sphereRadius);
+            pop();
+
+            if (isFadeMode && particleAlpha > 0) {
+                particleAlpha -= 4;
+            } else if (!isFadeMode && particleAlpha < 255) {
+                particleAlpha += 4;
+            }
+            particleAlpha = constrain(particleAlpha, 0, 255);
+            
+            stroke(255, particleAlpha);
+            strokeWeight(particleSize);
+            beginShape(POINTS);
+            
+            const bassForce = map(bass, 0, 255, 0, 4.0);
+            const midForce = map(mid, 0, 255, 0, 1.0);
+            const trebleVibration = map(treble, 0, 255, 0, 2.0);
+            
+            if(song.isPlaying()){
+                noiseTime += noiseSpeed;
+            }
+
+            const loopCount = isChaosMode ? chaosNumParticles : defaultNumParticles;
+            for (let i = 0; i < loopCount; i++) {
+                const p = particles[i];
+                p.applyForces(bassForce, midForce, trebleVibration);
+                p.update(bass);
+                p.checkBounds();
+                p.show();
+            }
+            endShape();
+        }
+
+        function updateLyrics() {
+            const currentTime = song.currentTime();
+            const lyricsDisplay = document.getElementById('lyrics-container');
+            
+            let activeLyric = "";
+            for (let i = 0; i < lyrics.length; i++) {
+                if (currentTime >= lyrics[i].time) {
+                    activeLyric = lyrics[i].text;
+                } else {
+                    break; 
+                }
+            }
+            
+            if (lyricsDisplay.innerText !== activeLyric) {
+                lyricsDisplay.innerText = activeLyric;
+                // Add a small animation when a new line appears
+                lyricsDisplay.classList.remove('new-line');
+                void lyricsDisplay.offsetWidth; // Trigger reflow
+                lyricsDisplay.classList.add('new-line');
+            }
+        }
+        
+        function startExperience() {
+            if (audioLoaded && !hasStarted) {
+                const audioContext = getAudioContext();
+                if (audioContext.state !== 'running') {
+                    audioContext.resume().then(() => {
+                        console.log('Audio Context resumed successfully.');
+                        song.loop();
+                        hasStarted = true;
+                        document.body.classList.add('playing');
+                        document.getElementById('record-button').disabled = false;
+                    }).catch(err => {
+                        console.error('Failed to resume Audio Context:', err);
+                    });
+                } else {
+                    song.loop();
+                    hasStarted = true;
+                    document.body.classList.add('playing');
+                    document.getElementById('record-button').disabled = false;
+                }
+            }
+        }
+
+        function touchStarted() {
+            startExperience();
+            return false;
+        }
+
+        function toggleRecording() {
+            if (!isRecording) {
+                startCombinedRecording();
+            } else {
+                stopCombinedRecording();
+            }
+        }
+
+        function startCombinedRecording() {
+            const canvasStream = document.querySelector('canvas').captureStream(60);
+            const audioContext = getAudioContext();
+            const audioDestination = audioContext.createMediaStreamDestination();
+            p5.soundOut.connect(audioDestination);
+            const audioStream = audioDestination.stream;
+            
+            const combinedStream = new MediaStream([
+                ...canvasStream.getVideoTracks(),
+                ...audioStream.getAudioTracks()
+            ]);
+
+            mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
+            recordedChunks = [];
+
+            mediaRecorder.ondataavailable = event => {
+                if (event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = 'audiovisualizer_recording.webm';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            };
+
+            mediaRecorder.start();
+            isRecording = true;
+            const button = document.getElementById('record-button');
+            button.textContent = 'Stop';
+            button.classList.add('recording');
+        }
+        
+        function stopCombinedRecording() {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            const button = document.getElementById('record-button');
+            button.textContent = 'Record';
+            button.classList.remove('recording');
+        }
+        
+        function keyPressed() {
+            if (keyCode === 32 && hasStarted) {
+                if (song.isPlaying()) {
+                    song.pause();
+                } else {
+                    song.play();
+                }
+            }
+
+            switch(key.toLowerCase()) {
+                case 'a':
+                    for (const p of particles) {
+                        p.explode();
+                    }
+                    break;
+                case 's':
+                    isChaosMode = !isChaosMode;
+                    break;
+                case 'd':
+                    isFadeMode = !isFadeMode;
+                    break;
+                case 'f':
+                    isCollapseMode = !isCollapseMode;
+                    break;
+            }
+        }
+        
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+        }
+
+        class Particle {
+            constructor() {
+                this.pos = p5.Vector.random3D().mult(random(sphereRadius * 0.5));
+                this.vel = createVector();
+                this.acc = createVector();
+                this.maxSpeed = 4;
+            }
+
+            applyForces(bassForce, midForce, trebleVibration) {
+                if (isCollapseMode) {
+                    let gravity = this.pos.copy().mult(-1);
+                    gravity.setMag(2.0);
+                    this.acc.add(gravity);
+                    this.vel.mult(0.95);
+                } else {
+                    const currentGravity = centralGravityStrength;
+                    let gravity = p5.Vector.mult(this.pos, -1);
+                    gravity.setMag(currentGravity);
+                    this.acc.add(gravity);
+
+                    const chaosMultiplier = isChaosMode ? 2.0 : 1.0;
+                    let noiseScale = 0.007;
+                    let t = noiseTime;
+                    
+                    let noiseX = map(noise(this.pos.y * noiseScale, this.pos.z * noiseScale, t), 0, 1, -1, 1);
+                    let noiseY = map(noise(this.pos.x * noiseScale, this.pos.z * noiseScale, t), 0, 1, -1, 1);
+                    let noiseZ = map(noise(this.pos.x * noiseScale, this.pos.y * noiseScale, t), 0, 1, -1, 1);
+
+                    let noiseForce = createVector(noiseX, noiseY, noiseZ);
+                    noiseForce.setMag(0.5 + midForce * 0.5);
+                    noiseForce.mult((1 + bassForce) * chaosMultiplier);
+                    this.acc.add(noiseForce);
+
+                    if (trebleVibration > 0.1) {
+                        let vibration = p5.Vector.random3D().mult(trebleVibration);
+                        this.pos.add(vibration);
+                    }
+                }
+            }
+            
+            explode() {
+                let explosionVel = this.pos.copy();
+                explosionVel.normalize();
+                explosionVel.mult(random(20, 30));
+                this.vel.add(explosionVel);
+            }
+
+            update(bass) {
+                this.vel.add(this.acc);
+
+                if (!isCollapseMode) {
+                    this.maxSpeed = map(bass, 0, 255, 4, 12);
+                    if (isChaosMode) {
+                        this.maxSpeed *= 2.0;
+                    }
+                    this.vel.limit(this.maxSpeed);
+                } else {
+                    this.vel.limit(30);
+                }
+
+                this.pos.add(this.vel);
+                this.acc.mult(0);
+            }
+
+            checkBounds() {
+                if (this.pos.mag() > sphereRadius) {
+                    let normal = this.pos.copy().normalize().mult(-1);
+                    let reflection = this.vel.copy().reflect(normal);
+                    this.vel.set(reflection);
+                    this.pos.setMag(sphereRadius);
+                }
+            }
+            
+            show() {
+                vertex(this.pos.x, this.pos.y, this.pos.z);
+            }
+        }
+    </script>
+    
+</body>
+</html>

@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Special+Gothic+Expanded+One&display=swap" rel="stylesheet">
+    <title>Synap | DS</title>
+    <style>
+        *{font-family: 'Special Gothic Expanded One', sans-serif; cursor: none;}
+        html, body { margin: 0; padding: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #controls-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background-color: rgba(0,0,0,0.8); z-index: 10; transition: opacity 1s ease-in-out; color: #FFF; font-family: 'Inter', sans-serif; }
+        #controls-overlay.hidden { opacity: 0; pointer-events: none; }
+        .instructions { text-align: center; max-width: 600px; padding: 90px 90px; border-radius: 200px; background: rgba(0, 0, 0, 0.971); }
+        .instructions h1 { color: #FFFFFF; margin-bottom: 20px; }
+        .instructions p { margin: 10px 0; line-height: 1.6; }
+        .instructions kbd { background-color: #333; border-radius: 3px; padding: 3px 6px; font-family: 'Special Gothic Expanded One', sans-serif; border: 1px solid #555; }
+        .instructions button { margin-top: 20px; padding: 12px 25px; font-size: 16px; font-weight: bold; color: #000; background: #FFFFFF; border: none; border-radius: 25px; cursor: pointer; transition: background-color 0.3s; }
+        .instructions button:hover { background: #333; color: #FFF; }
+        .instructions img{width: 70px;}
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+</head>
+<body>
+    <main></main>
+    <div id="controls-overlay">
+        <div class="instructions">
+            <img src="media/eye.png">
+            <h1>DENIZ SULMAZ</h1>
+            <!-- <p>
+                <kbd>A</kbd>: Phyllotaxis Sphere | <kbd>S</kbd>: Towers | <kbd>D</kbd>: Supernova | <kbd>F</kbd>: Vortex | <kbd>G</kbd>: Lissajous
+            </p>
+            <p>
+                <kbd>H</kbd>: Starfield | <kbd>J</kbd>: Bass Quake | <kbd>K</kbd>: Freq. Line | <kbd>L</kbd>: Noise Grid | <kbd>P</kbd>: Pause | <kbd>Space</kbd>: Flash
+            </p> -->
+            <button id="startButton">sense it</button>
+        </div>
+    </div>
+
+    <script>
+    const sketch = (p) => {
+        // --- CONFIGURATION ---
+        const songData = [
+            { key: '1', file: 'k1.mp3', sound: null }, { key: '2', file: 'k2.mp3', sound: null },
+            { key: '3', file: 'k3.mp3', sound: null }, { key: '4', file: 'k4.mp3', sound:null },
+            { key: '5', file: 'k5.mp3', sound: null }, { key: '6', file: 'k6.mp3', sound: null },
+            { key: '7', file: 'istanbul.mp3', sound: null }, { key: '8', file: 'london.mp3', sound: null },
+        ];
+        const assetsPath = 'media/';
+
+        // --- GLOBAL STATE ---
+        let fft, currentSongIndex = -1, isPaused = false;
+        let activeScene = 'starfield';
+        let starfieldParticles = [];
+        let lissajousState = { a: 1, b: 2, a_speed: 0.01, b_speed: 0.013 };
+        let cameraZ;
+
+        // --- EFFECT-SPECIFIC STATE ---
+        const effects = {
+            flash: { alpha: 0 },
+            bassQuake: { intensity: 0 },
+            vortex: { rotation: 0 },
+            supernova: { particles: [], shockwave: 0 }
+        };
+
+        p.preload = () => {
+            songData.forEach(song => {
+                song.sound = p.loadSound(assetsPath + song.file, 
+                    () => console.log(`${song.file} loaded.`),
+                    (err) => console.error(`Failed to load ${song.file}. Are you using a local server?`, err)
+                );
+            });
+        };
+
+        p.setup = () => {
+            p.createCanvas(p.windowWidth, p.windowHeight, p.WEBGL);
+            p.setAttributes('antialias', true);
+            fft = new p5.FFT(0.8, 512);
+            // Set initial camera distance
+            cameraZ = (p.height / 2.0) / p.tan(p.PI * 30.0 / 180.0);
+
+            for (let i = 0; i < 1500; i++) {
+                starfieldParticles.push(p.createVector(p.random(-p.width*1.5, p.width*1.5), p.random(-p.height*1.5, p.height*1.5), p.random(-2000, 2000)));
+            }
+        };
+
+        p.draw = () => {
+            p.background(0);
+            fft.analyze();
+            
+            // Set camera position based on zoom level
+            p.camera(0, 0, cameraZ, 0, 0, 0, 0, 1, 0);
+
+            handleGlobalEffects();
+
+            // Only apply mouse-look camera rotation for 3D scenes
+            if (activeScene !== 'freqLine' && activeScene !== 'pixelGrid') {
+                let camX = p.map(p.mouseX, 0, p.width, -p.PI, p.PI);
+                let camY = p.map(p.mouseY, 0, p.height, -p.PI / 2, p.PI / 2);
+                p.rotateX(camY * 0.5);
+                p.rotateY(camX * 0.5);
+            }
+
+            switch (activeScene) {
+                case 'starfield': drawStarfield(); break;
+                case 'phyllotaxis': drawPhyllotaxis(); break; // New animation for 'A'
+                case 'towers': drawTowers(); break;
+                case 'supernova': drawSupernova(); break;
+                case 'vortex': drawVortex(); break;
+                case 'lissajous': drawLissajous(); break;
+                case 'freqLine': drawFrequencyLine(); break;
+                case 'pixelGrid': drawPixelGrid(); break; // Fixed animation for 'L'
+                default: drawStarfield();
+            }
+        };
+
+        // --- GENERATIVE SCENE RENDERERS ---
+
+        function drawStarfield() {
+            p.push();
+            p.rotateZ(p.frameCount * 0.0005);
+            let bass = fft.getEnergy("bass");
+            let speed = p.map(bass, 0, 255, 1, 15);
+            p.stroke(255);
+            p.strokeWeight(2.5);
+            p.beginShape(p.POINTS);
+            for (const particle of starfieldParticles) {
+                particle.z += speed;
+                let noiseFactor = 10;
+                let x_offset = (p.noise(particle.y * 0.005, particle.z * 0.005, p.frameCount * 0.001) - 0.5) * noiseFactor;
+                let y_offset = (p.noise(particle.x * 0.005, particle.z * 0.005, p.frameCount * 0.001) - 0.5) * noiseFactor;
+                if (particle.z > 2000) particle.z = -2000;
+                p.vertex(particle.x + x_offset, particle.y + y_offset, particle.z);
+            }
+            p.endShape();
+            p.pop();
+        }
+        
+        // NEW 'A' Animation
+        function drawPhyllotaxis() {
+            p.push();
+            p.rotateY(p.frameCount * 0.002);
+            let bass = fft.getEnergy("bass");
+            let treble = fft.getEnergy("treble");
+            let n = 2000; // Number of points
+            let c = p.map(bass, 0, 255, 4, 10); // Spacing reacts to bass
+            p.stroke(255);
+            p.strokeWeight(p.map(treble, 0, 255, 1, 4)); // Point size reacts to treble
+            
+            p.beginShape(p.POINTS);
+            for (let i = 0; i < n; i++) {
+                const phi = i * 137.5 * (p.PI / 180);
+                const r = c * p.sqrt(i);
+                const x = r * p.cos(phi);
+                const y = r * p.sin(phi);
+                p.vertex(x, y, 0); // Drawn as a 2D spiral, but in 3D space
+            }
+            p.endShape();
+            p.pop();
+        }
+
+        function drawTowers() {
+            p.push();
+            p.stroke(255, 200);
+            p.fill(255, 50);
+            p.rotateX(p.PI / 3);
+            let spectrum = fft.analyze();
+            const w = p.width / 16;
+            for (let i = 0; i < 16; i++) {
+                for (let j = 0; j < 16; j++) {
+                    p.push();
+                    let noiseVal = p.noise(i * 0.2, j * 0.2, p.frameCount * 0.01);
+                    let h = p.map(spectrum[i * 16], 0, 255, 50, 600) * noiseVal;
+                    let x = p.map(i, 0, 15, -p.width / 2, p.width / 2);
+                    let z = p.map(j, 0, 15, -p.width / 2, p.width / 2);
+                    p.translate(x, 0, z);
+                    p.box(w * 0.8, h, w * 0.8);
+                    p.pop();
+                }
+            }
+            p.pop();
+        }
+        
+        function drawSupernova() {
+            let bass = fft.getEnergy("bass");
+            if (bass > 220 && p.frameCount % 2 === 0) {
+                for (let i = 0; i < 25; i++) {
+                    effects.supernova.particles.push(new SupernovaParticle());
+                }
+            }
+            p.rotateX(p.frameCount * 0.001);
+            p.rotateY(p.frameCount * 0.001);
+            for (let i = effects.supernova.particles.length - 1; i >= 0; i--) {
+                let particle = effects.supernova.particles[i];
+                particle.update();
+                particle.show();
+                if (particle.isFinished()) {
+                    effects.supernova.particles.splice(i, 1);
+                }
+            }
+            if (effects.supernova.shockwave > 0) {
+                p.push();
+                p.noFill();
+                let alpha = p.map(effects.supernova.shockwave, 0, 0.1, 255, 0);
+                p.stroke(255, alpha);
+                p.strokeWeight(p.map(effects.supernova.shockwave, 0, 1, 1, 0));
+                p.sphere(effects.supernova.shockwave * p.width * 1.2, 16, 16);
+                effects.supernova.shockwave += 0.02;
+                if (effects.supernova.shockwave > 1) {
+                    effects.supernova.shockwave = 0;
+                }
+                p.pop();
+            }
+        }
+
+        function drawVortex() {
+            p.push();
+            let bass = fft.getEnergy("bass");
+            let initialRadius = p.map(bass, 0, 255, 300, 800);
+            effects.vortex.rotation += 0.01;
+            p.stroke(255);
+            p.noFill();
+            p.strokeWeight(1.5);
+            p.translate(0, 0, p.frameCount % (p.height * 5));
+            for (let i = 0; i < 80; i++) {
+                p.push();
+                let z = (i * 40) % (p.height * 5);
+                let dynamicRadius = p.map(z, 0, p.height * 5, initialRadius, 10);
+                let swirlX = p.noise(i * 0.1, p.frameCount * 0.01) * 100 - 50;
+                let swirlY = p.noise(i * 0.1 + 100, p.frameCount * 0.01) * 100 - 50;
+                p.translate(swirlX, swirlY, -z);
+                p.rotateZ(effects.vortex.rotation + i * 0.1);
+                p.ellipse(0, 0, dynamicRadius, dynamicRadius);
+                p.pop();
+            }
+            p.pop();
+        }
+
+        function drawLissajous() {
+            p.push();
+            p.stroke(255);
+            p.strokeWeight(1.5);
+            p.noFill();
+            let bass = fft.getEnergy("bass");
+            let scale = p.map(bass, 0, 255, p.width / 4, p.width / 2);
+            lissajousState.a += lissajousState.a_speed;
+            lissajousState.b += lissajousState.b_speed;
+            p.beginShape();
+            for (let t = 0; t < p.TWO_PI; t += 0.01) {
+                let x = p.sin(lissajousState.a * t + p.PI / 2) * p.cos(lissajousState.b * t) * scale;
+                let y = p.sin(lissajousState.b * t) * scale;
+                let z = p.cos(lissajousState.a * t + p.PI / 2) * p.cos(lissajousState.b * t) * scale;
+                p.vertex(x, y, z);
+            }
+            p.endShape(p.CLOSE);
+            let treble = fft.getEnergy("treble");
+            if (treble > 200 && p.frameCount % 10 === 0) {
+                lissajousState.a_speed = p.random(0.01, 0.03);
+                lissajousState.b_speed = p.random(0.01, 0.03);
+            }
+            p.pop();
+        }
+
+        function drawFrequencyLine() {
+            p.push();
+            p.resetMatrix();
+            let waveform = fft.waveform();
+            p.noFill();
+            p.stroke(255);
+            p.strokeWeight(2);
+            p.beginShape();
+            for (let i = 0; i < waveform.length; i++) {
+                let x = p.map(i, 0, waveform.length, -p.width / 2, p.width / 2);
+                let y = p.map(waveform[i], -1, 1, -p.height / 4, p.height / 4);
+                p.vertex(x, y);
+            }
+            p.endShape();
+            p.pop();
+        }
+
+        // FIXED 'L' Animation
+        function drawPixelGrid() {
+            p.push();
+            p.resetMatrix(); // 2D mode
+            p.noStroke();
+            let bass = fft.getEnergy("bass");
+            let noiseSpeed = p.map(bass, 0, 255, 0.02, 0.1);
+            let gridSize = 10;
+            for (let y = 0; y < p.height; y += gridSize) {
+                for (let x = 0; x < p.width; x += gridSize) {
+                    let noiseVal = p.noise(x * 0.01, y * 0.01, p.frameCount * noiseSpeed);
+                    let c = p.map(noiseVal, 0, 1, 0, 255);
+                    p.fill(c);
+                    p.rect(x - p.width/2, y - p.height/2, gridSize, gridSize);
+                }
+            }
+            p.pop();
+        }
+
+        function handleGlobalEffects() {
+            if (effects.flash.alpha > 0) {
+                p.push();
+                p.resetMatrix();
+                p.fill(255, effects.flash.alpha);
+                p.noStroke();
+                p.rect(-p.width/2, -p.height/2, p.width, p.height);
+                effects.flash.alpha -= 15;
+                p.pop();
+            }
+            if (effects.bassQuake.intensity > 0) {
+                let bass = fft.getEnergy("bass");
+                if (bass > 210) {
+                    let shakeX = p.random(-effects.bassQuake.intensity, effects.bassQuake.intensity);
+                    let shakeY = p.random(-effects.bassQuake.intensity, effects.bassQuake.intensity);
+                    p.translate(shakeX, shakeY);
+                    p.pointLight(255, 255, 255, 0, 0, 200);
+                }
+                effects.bassQuake.intensity -= 1;
+            }
+        }
+
+        class SupernovaParticle {
+            constructor() {
+                this.pos = p5.Vector.random3D().mult(p.random(10, 60));
+                this.vel = this.pos.copy().normalize().mult(p.random(15, 25));
+                this.lifespan = 255;
+                this.drag = p.random(0.95, 0.98);
+            }
+            isFinished() { return this.lifespan < 0; }
+            update() {
+                this.vel.mult(this.drag);
+                this.pos.add(this.vel);
+                this.lifespan -= 3;
+            }
+            show() {
+                p.push();
+                p.noStroke();
+                p.fill(255, this.lifespan);
+                p.translate(this.pos.x, this.pos.y, this.pos.z);
+                p.sphere(p.map(this.lifespan, 0, 255, 12, 0.1), 6, 6);
+                p.pop();
+            }
+        }
+        
+        // NEW: Handle mouse wheel for zooming
+        p.mouseWheel = (event) => {
+            cameraZ += event.delta;
+            // Add constraints to prevent zooming too far or clipping
+            cameraZ = p.constrain(cameraZ, -p.height, p.height * 2);
+            return false; // Prevent page scrolling
+        }
+
+        p.keyPressed = () => {
+            if (p.getAudioContext().state !== 'running') return;
+            const key = p.key.toLowerCase();
+            if (key === 'p') {
+                isPaused = !isPaused;
+                if (isPaused) { p.noLoop(); if (currentSongIndex !== -1) songData[currentSongIndex].sound.pause(); } 
+                else { p.loop(); if (currentSongIndex !== -1) songData[currentSongIndex].sound.play(); }
+                return;
+            }
+            if(isPaused) return;
+            const songToPlay = songData.findIndex(song => song.key === key);
+            if (songToPlay !== -1) { playSong(songToPlay); return; }
+            switch (key) {
+                case ' ':
+                    effects.flash.alpha = 255;
+                    return false;
+                case 'a':
+                    activeScene = 'phyllotaxis';
+                    break;
+                case 's': activeScene = 'towers'; break;
+                case 'd':
+                    activeScene = 'supernova';
+                    effects.supernova.particles = [];
+                    effects.supernova.shockwave = 0.01;
+                    for(let i=0; i<500; i++) {
+                        effects.supernova.particles.push(new SupernovaParticle());
+                    }
+                    break;
+                case 'f': activeScene = 'vortex'; break;
+                case 'g': activeScene = 'lissajous'; break;
+                case 'h': activeScene = 'starfield'; break;
+                case 'j': effects.bassQuake.intensity = 20; break;
+                case 'k': activeScene = 'freqLine'; break;
+                case 'l': activeScene = 'pixelGrid'; break;
+            }
+        };
+
+        function playSong(index) {
+            if (index < 0 || index >= songData.length) return;
+            if (currentSongIndex !== -1 && songData[currentSongIndex].sound.isPlaying()) {
+                songData[currentSongIndex].sound.stop();
+            }
+            currentSongIndex = index;
+            songData[currentSongIndex].sound.loop();
+            songData[currentSongIndex].sound.play();
+        }
+
+        p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
+        
+        const setupStartButton = () => {
+            const startButton = document.getElementById('startButton');
+            const overlay = document.getElementById('controls-overlay');
+            startButton.addEventListener('click', () => {
+                p.userStartAudio().then(() => {
+                    console.log('Audio context started.');
+                    playSong(0);
+                    overlay.classList.add('hidden');
+                }).catch(e => console.error('Audio context could not be started.', e));
+            });
+        };
+        
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setupStartButton);
+        else setupStartButton();
+    };
+
+    let myp5 = new p5(sketch);
+    </script>
+</body>
+</html>
