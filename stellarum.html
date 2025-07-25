@@ -97,7 +97,7 @@
             let bassHistory = [], midHistory = [];
 
             p.preload = () => {
-                sound = p.loadSound('media/kozmos.mp3', 
+                sound = p.loadSound('/media/kozmos.mp3', 
                     () => { audioState.isReady = true; document.getElementById('info').textContent = ''; },
                     () => { console.error("Failed to load kozmos.mp3"); document.getElementById('info').textContent = 'Error Loading Audio'; }
                 );
