@@ -20,6 +20,31 @@
         .instructions button { margin-top: 20px; padding: 12px 25px; font-size: 16px; font-weight: bold; color: #000; background: #FFFFFF; border: none; border-radius: 25px; cursor: pointer; transition: background-color 0.3s; }
         .instructions button:hover { background: #333; color: #FFF; }
         .instructions img{width: 70px;}
+
+        /* --- Lyrics Overlay Styles (FOR V KEY) --- */
+        #lyrics-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none; /* Initially hidden */
+            justify-content: center;
+            align-items: center;
+            pointer-events: none; /* Allows mouse interaction with canvas below */
+            z-index: 5;
+        }
+        #lyrics-container {
+            color: white;
+            font-family: 'Special Gothic Expanded One', sans-serif;
+            font-size: 2.3rem; /* Adjusted font size */
+            text-align: left;
+            line-height: 1.9;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+        #lyrics-overlay.visible {
+            display: flex; /* Show the overlay */
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
@@ -30,14 +55,13 @@
         <div class="instructions">
             <img src="media/eye.png">
             <h1>DENIZ SULMAZ</h1>
-            <!-- <p>
-                <kbd>A</kbd>: Phyllotaxis Sphere | <kbd>S</kbd>: Towers | <kbd>D</kbd>: Supernova | <kbd>F</kbd>: Vortex | <kbd>G</kbd>: Lissajous
-            </p>
-            <p>
-                <kbd>H</kbd>: Starfield | <kbd>J</kbd>: Bass Quake | <kbd>K</kbd>: Freq. Line | <kbd>L</kbd>: Noise Grid | <kbd>P</kbd>: Pause | <kbd>Space</kbd>: Flash
-            </p> -->
             <button id="startButton">sense it</button>
         </div>
+    </div>
+
+    <!-- Lyrics Overlay Container (FOR V KEY) -->
+    <div id="lyrics-overlay">
+        <div id="lyrics-container"></div>
     </div>
 
     <script>
@@ -50,6 +74,44 @@
             { key: '7', file: 'istanbul.mp3', sound: null }, { key: '8', file: 'london.mp3', sound: null },
         ];
         const assetsPath = '/media/';
+        // Poem for the 'V' key animation
+        const poem = [
+            "The stories are there if you listen",
+            "The stories are here,",
+            "the stories are you and your fear.",
+            "And your hope, is as old as the language of smoke.",
+            "The language of blood",
+            "The language of languishing love",
+            "",
+            "The gods are in the betting shops",
+            "The gods are in the caf",
+            "The gods are smoking fags out the back",
+            "The gods are in the office blocks",
+            "The gods are at their desks",
+            "The gods are sick of always giving more and getting less",
+            "The gods are at the rave now. They're two pills deep into .",
+            "The gods are in the alleyways laughing",
+            "The gods are at the doctors",
+            "They just need a little something for the stress",
+            "The gods are in the toilets having unprotected sex",
+            "The gods are in the supermarket",
+            "The gods are walking home",
+            "The gods can't stop checking Facebook their phones",
+            "The gods are in a traffic jam",
+            "The gods are on a train",
+            "The gods are watching adverts",
+            "The gods are not to blame",
+            "They are working for the council",
+            "The gods are on the dole",
+            "The gods are getting drunk, pissing their wages down a hole",
+            "The gods are in their gardens and they're staring at the plants",
+            "The gods are in the classrooms",
+            "Those poor things don't stand a chance",
+            "The gods are trying to tell the truth",
+            "But the truth is hard to say",
+            "The gods are born they live a while and then, they pass away",
+            // Kae Tempest – Brand New Ancients
+        ];
 
         // --- GLOBAL STATE ---
         let fft, currentSongIndex = -1, isPaused = false;
@@ -57,6 +119,10 @@
         let starfieldParticles = [];
         let lissajousState = { a: 1, b: 2, a_speed: 0.01, b_speed: 0.013 };
         let cameraZ;
+
+        // --- DOM Elements & Lyrics State (FOR V KEY) ---
+        let lyricsOverlay, lyricsContainer;
+        let lyricsY;
 
         // --- EFFECT-SPECIFIC STATE ---
         const effects = {
@@ -79,8 +145,13 @@
             p.createCanvas(p.windowWidth, p.windowHeight, p.WEBGL);
             p.setAttributes('antialias', true);
             fft = new p5.FFT(0.8, 512);
-            // Set initial camera distance
             cameraZ = (p.height / 2.0) / p.tan(p.PI * 30.0 / 180.0);
+
+            // Setup Lyrics DOM elements (FOR V KEY)
+            lyricsOverlay = document.getElementById('lyrics-overlay');
+            lyricsContainer = document.getElementById('lyrics-container');
+            lyricsContainer.innerHTML = poem.join('<br>');
+            lyricsY = p.height; // Adjusted starting position
 
             for (let i = 0; i < 1500; i++) {
                 starfieldParticles.push(p.createVector(p.random(-p.width*1.5, p.width*1.5), p.random(-p.height*1.5, p.height*1.5), p.random(-2000, 2000)));
@@ -91,12 +162,10 @@
             p.background(0);
             fft.analyze();
             
-            // Set camera position based on zoom level
             p.camera(0, 0, cameraZ, 0, 0, 0, 0, 1, 0);
 
             handleGlobalEffects();
 
-            // Only apply mouse-look camera rotation for 3D scenes
             if (activeScene !== 'freqLine' && activeScene !== 'pixelGrid') {
                 let camX = p.map(p.mouseX, 0, p.width, -p.PI, p.PI);
                 let camY = p.map(p.mouseY, 0, p.height, -p.PI / 2, p.PI / 2);
@@ -106,13 +175,14 @@
 
             switch (activeScene) {
                 case 'starfield': drawStarfield(); break;
-                case 'phyllotaxis': drawPhyllotaxis(); break; // New animation for 'A'
+                case 'phyllotaxis': drawPhyllotaxis(); break;
                 case 'towers': drawTowers(); break;
                 case 'supernova': drawSupernova(); break;
                 case 'vortex': drawVortex(); break;
                 case 'lissajous': drawLissajous(); break;
                 case 'freqLine': drawFrequencyLine(); break;
-                case 'pixelGrid': drawPixelGrid(); break; // Fixed animation for 'L'
+                case 'pixelGrid': drawPixelGrid(); break;
+                case 'lyricsFlow': updateLyricsAnimation(); break; // V key logic
                 default: drawStarfield();
             }
         };
@@ -139,16 +209,15 @@
             p.pop();
         }
         
-        // NEW 'A' Animation
         function drawPhyllotaxis() {
             p.push();
             p.rotateY(p.frameCount * 0.002);
             let bass = fft.getEnergy("bass");
             let treble = fft.getEnergy("treble");
-            let n = 2000; // Number of points
-            let c = p.map(bass, 0, 255, 4, 10); // Spacing reacts to bass
+            let n = 2000;
+            let c = p.map(bass, 0, 255, 4, 10);
             p.stroke(255);
-            p.strokeWeight(p.map(treble, 0, 255, 1, 4)); // Point size reacts to treble
+            p.strokeWeight(p.map(treble, 0, 255, 1, 4));
             
             p.beginShape(p.POINTS);
             for (let i = 0; i < n; i++) {
@@ -156,7 +225,7 @@
                 const r = c * p.sqrt(i);
                 const x = r * p.cos(phi);
                 const y = r * p.sin(phi);
-                p.vertex(x, y, 0); // Drawn as a 2D spiral, but in 3D space
+                p.vertex(x, y, 0);
             }
             p.endShape();
             p.pop();
@@ -281,10 +350,9 @@
             p.pop();
         }
 
-        // FIXED 'L' Animation
         function drawPixelGrid() {
             p.push();
-            p.resetMatrix(); // 2D mode
+            p.resetMatrix();
             p.noStroke();
             let bass = fft.getEnergy("bass");
             let noiseSpeed = p.map(bass, 0, 255, 0.02, 0.1);
@@ -298,6 +366,15 @@
                 }
             }
             p.pop();
+        }
+
+        // --- 'V' KEY ANIMATION LOGIC ---
+        function updateLyricsAnimation() {
+            lyricsY -= 0.6; // Adjusted scrolling speed
+            lyricsContainer.style.transform = `translateY(${lyricsY}px)`;
+            if (lyricsY < -lyricsContainer.offsetHeight) {
+                lyricsY = p.height;
+            }
         }
 
         function handleGlobalEffects() {
@@ -345,12 +422,21 @@
             }
         }
         
-        // NEW: Handle mouse wheel for zooming
         p.mouseWheel = (event) => {
             cameraZ += event.delta;
-            // Add constraints to prevent zooming too far or clipping
             cameraZ = p.constrain(cameraZ, -p.height, p.height * 2);
-            return false; // Prevent page scrolling
+            return false;
+        }
+
+        // --- HELPER FUNCTION FOR SCENE SWITCHING (FOR V KEY) ---
+        function switchScene(newScene) {
+            activeScene = newScene;
+            if (newScene !== 'lyricsFlow') {
+                lyricsOverlay.classList.remove('visible');
+            } else {
+                lyricsY = p.height*1.6; // Adjusted reset position
+                lyricsOverlay.classList.add('visible');
+            }
         }
 
         p.keyPressed = () => {
@@ -369,24 +455,28 @@
                 case ' ':
                     effects.flash.alpha = 255;
                     return false;
-                case 'a':
-                    activeScene = 'phyllotaxis';
-                    break;
-                case 's': activeScene = 'towers'; break;
+                case 'a': switchScene('phyllotaxis'); break;
+                case 's': switchScene('towers'); break;
                 case 'd':
-                    activeScene = 'supernova';
+                    switchScene('supernova');
                     effects.supernova.particles = [];
                     effects.supernova.shockwave = 0.01;
                     for(let i=0; i<500; i++) {
                         effects.supernova.particles.push(new SupernovaParticle());
                     }
                     break;
-                case 'f': activeScene = 'vortex'; break;
-                case 'g': activeScene = 'lissajous'; break;
-                case 'h': activeScene = 'starfield'; break;
-                case 'j': effects.bassQuake.intensity = 20; break;
-                case 'k': activeScene = 'freqLine'; break;
-                case 'l': activeScene = 'pixelGrid'; break;
+                case 'f': switchScene('vortex'); break;
+                case 'g': switchScene('lissajous'); break;
+                case 'h': switchScene('starfield'); break;
+                case 'j':
+                    effects.bassQuake.intensity = 20;
+                    if (activeScene === 'towers' || activeScene === 'supernova') {
+                        p.filter(p.INVERT);
+                    }
+                    break;
+                case 'k': switchScene('freqLine'); break;
+                case 'l': switchScene('pixelGrid'); break;
+                case 'v': switchScene('lyricsFlow'); break; // ADDED V KEY
             }
         };
 
