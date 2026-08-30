@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOLTSCOPE</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; background:#000; overflow:hidden; font-family:'Courier New', Courier, monospace; }
+  canvas { display:block; position:absolute; inset:0; width:100%; height:100%; }
+
+  /* ---------- START TERMINAL ---------- */
+  #boot {
+    position:absolute; inset:0; z-index:10;
+    display:flex; align-items:center; justify-content:center;
+    background:#000;
+  }
+  #boot::after { /* scanlines on the boot screen too */
+    content:''; position:absolute; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,.35) 2px 4px);
+  }
+  .panel {
+    border:1px solid #1e5c2f;
+    box-shadow:0 0 40px rgba(65,255,107,.08), inset 0 0 60px rgba(65,255,107,.03);
+    padding:42px 54px; min-width:520px; max-width:640px;
+    color:#41ff6b; position:relative;
+  }
+  .panel::before {
+    content:''; position:absolute; inset:6px; border:1px solid rgba(65,255,107,.15); pointer-events:none;
+  }
+  h1 {
+    font-size:26px; letter-spacing:14px; font-weight:normal;
+    text-shadow:0 0 12px rgba(65,255,107,.8);
+    margin-bottom:6px;
+  }
+  .sub { font-size:10px; letter-spacing:4px; color:#2c9a4b; margin-bottom:34px; }
+  .opt {
+    display:block; width:100%; text-align:left;
+    background:transparent; border:1px solid #1e5c2f; color:#41ff6b;
+    font-family:inherit; font-size:13px; letter-spacing:3px;
+    padding:14px 18px; margin-bottom:12px; cursor:pointer;
+    transition:background .12s, box-shadow .12s;
+  }
+  .opt:hover, .opt:focus {
+    background:rgba(65,255,107,.08);
+    box-shadow:0 0 18px rgba(65,255,107,.25), inset 0 0 12px rgba(65,255,107,.08);
+    outline:none;
+  }
+  .opt .tag { color:#2c9a4b; margin-right:14px; }
+  select {
+    width:100%; background:#000; color:#41ff6b; border:1px solid #1e5c2f;
+    font-family:inherit; font-size:12px; letter-spacing:2px; padding:10px;
+    margin-bottom:12px; display:none;
+  }
+  select:focus { outline:none; box-shadow:0 0 14px rgba(65,255,107,.25); }
+  .keys {
+    margin-top:26px; font-size:9px; letter-spacing:2px; color:#1f7a3a; line-height:2;
+  }
+  .keys b { color:#41ff6b; font-weight:normal; }
+  .cursor { display:inline-block; width:8px; height:14px; background:#41ff6b; vertical-align:middle; animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  #fileInput { display:none; }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<canvas id="main"></canvas>
+
+<div id="boot">
+  <div class="panel">
+    <h1>VOLTSCOPE</h1>
+    <div class="sub">AUDIO-REACTIVE OSCILLOSCOPE // UNIT 07 &nbsp;<span class="cursor"></span></div>
+
+    <button class="opt" id="btnProject"><span class="tag">[01]</span>PROJECT AUDIO</button>
+    <select id="trackSelect" size="8"></select>
+    <button class="opt" id="btnUpload"><span class="tag">[02]</span>UPLOAD FILE</button>
+    <button class="opt" id="btnMic"><span class="tag">[03]</span>MICROPHONE INPUT</button>
+    <input type="file" id="fileInput" accept="audio/*">
+
+    <div class="keys">
+      <b>A</b> GLITCH &nbsp;<b>S</b> TRAILS &nbsp;<b>D</b> KALEIDO &nbsp;<b>F</b> 3D DEPTH &nbsp;<b>G</b> GRID &nbsp;<b>H</b> SLO-MO &nbsp;<b>J</b> INVERT &nbsp;<b>K</b> CALM &nbsp;<b>X</b> NO ARCS &nbsp;<b>M</b> MONO<br>
+      <b>SPACE</b> DISRUPT &nbsp;&nbsp;<b>R</b> RESET FX &nbsp;&nbsp;<b>1</b> MENU &nbsp;&nbsp;<b>2-3</b> TRACK &nbsp;&nbsp;<b>ENTER</b> PAUSE/RESUME
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   CONFIG — swap tracks here
+   ============================================================ */
+const MEDIA = 'media/';
+const HOTKEY_TRACKS = ['faraway.mp3', 'kozmos.mp3', 'brain.mp3']; // keys 1,2,3
+const PROJECT_TRACKS = [
+  'faraway.mp3','kozmos.mp3','brain.mp3','istanbul.mp3','waves.mp3',
+  'impacto.mp3','reverence.mp3','luna.mp3','london.mp3','mamamia.mp3',
+  'savrulurken.mp3','whenithought.mp3','forever.mp3','apale.mp3',
+  'bahrain.mp3','batonebo.mp3'
+];
+const GREEN_BASE = [65,255,107], MONO_BASE = [235,240,238];
+let GREEN = GREEN_BASE.slice(); // live color — shifts to white in mono mode (M)
+let mono = false, monoAmt = 0;
+
+/* ============================================================
+   CANVASES
+   ============================================================ */
+const main = document.getElementById('main');
+const scene = document.getElementById('scene');
+const mtx = main.getContext('2d');
+const stx = scene.getContext('2d');
+let W=0, H=0, DPR=Math.min(devicePixelRatio||1, 2);
+function resize(){
+  W = innerWidth; H = innerHeight;
+  for (const c of [main, scene]){ c.width = W*DPR; c.height = H*DPR; }
+  mtx.setTransform(DPR,0,0,DPR,0,0);
+  stx.setTransform(DPR,0,0,DPR,0,0);
+  stx.fillStyle = '#000'; stx.fillRect(0,0,W,H);
+  buildScanlines();
+}
+let scanCanvas = null;
+function buildScanlines(){
+  scanCanvas = document.createElement('canvas');
+  scanCanvas.width = 4; scanCanvas.height = 4;
+  const c = scanCanvas.getContext('2d');
+  c.fillStyle = 'rgba(0,0,0,0.28)';
+  c.fillRect(0,2,4,2);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ============================================================
+   AUDIO ENGINE
+   ============================================================ */
+let actx=null, analyser=null, mediaSrc=null, micSrc=null, micStream=null;
+const audio = new Audio();
+audio.loop = true;
+
+const FFT = 2048;
+let timeData, freqData, prevFreq;
+
+function ensureCtx(){
+  if (!actx){
+    actx = new (window.AudioContext||window.webkitAudioContext)();
+    analyser = actx.createAnalyser();
+    analyser.fftSize = FFT;
+    analyser.smoothingTimeConstant = 0;
+    analyser.connect(actx.destination); // will be disconnected for mic
+    timeData = new Uint8Array(FFT);
+    freqData = new Uint8Array(FFT/2);
+    prevFreq = new Uint8Array(FFT/2);
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+
+let inputMode = 'none'; // 'track' | 'mic'
+let trackName = '';
+
+function playTrack(file){
+  ensureCtx();
+  if (micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
+  if (micSrc){ try{micSrc.disconnect();}catch(e){} micSrc=null; }
+  try { analyser.disconnect(); } catch(e){}
+  analyser.connect(actx.destination);
+  if (!mediaSrc){
+    mediaSrc = actx.createMediaElementSource(audio);
+  }
+  try { mediaSrc.disconnect(); } catch(e){}
+  mediaSrc.connect(analyser);
+  audio.src = file.startsWith('blob:') ? file : MEDIA + file;
+  trackName = file.startsWith('blob:') ? uploadName : file.replace(/\.\w+$/,'').toUpperCase();
+  audio.play().catch(()=>{});
+  inputMode = 'track';
+  state.stopped = false;
+  hideBoot();
+}
+let uploadName = 'UPLOAD';
+
+async function startMic(){
+  ensureCtx();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
+  } catch(e){
+    alert('MICROPHONE ACCESS DENIED');
+    return;
+  }
+  audio.pause();
+  if (mediaSrc){ try{mediaSrc.disconnect();}catch(e){} }
+  try { analyser.disconnect(); } catch(e){} // no monitor loopback for mic
+  micSrc = actx.createMediaStreamSource(micStream);
+  const micGain = actx.createGain();
+  micGain.gain.value = 4.0; // mic runs much quieter than a mastered track — boost it
+  micSrc.connect(micGain);
+  micGain.connect(analyser);
+  inputMode = 'mic';
+  trackName = 'LIVE INPUT';
+  state.stopped = false;
+  hideBoot();
+}
+
+/* ============================================================
+   ANALYSIS — rms, bands, spectral flux onsets, kick, silence
+   ============================================================ */
+const A = {
+  rms:0, rmsSm:0,
+  sub:0, bass:0, mid:0, high:0,       // smoothed band energies 0..1
+  centroid:0,                          // spectral centroid 0..1
+  flux:0, kickFlux:0,
+  kickEnv:0, onsetEnv:0,               // decaying envelopes
+  silent:true, silentFrames:999,
+  peak:0.05, intens:0,                 // track-relative loudness (0..1)
+  bpmTaps:[], bpm:0
+};
+const fluxHist = [], kickHist = [];
+let lastKick = 0, lastOnset = 0;
+
+function bandAvg(lo, hi){ // bin indices inclusive
+  let s=0; for (let i=lo;i<=hi;i++) s += freqData[i];
+  return s / ((hi-lo+1)*255);
+}
+function lerp(a,b,t){ return a+(b-a)*t; }
+
+function analyze(now){
+  analyser.getByteTimeDomainData(timeData);
+  analyser.getByteFrequencyData(freqData);
+
+  // rms
+  let sum=0;
+  for (let i=0;i<FFT;i+=4){ const v=(timeData[i]-128)/128; sum += v*v; }
+  A.rms = Math.sqrt(sum/(FFT/4));
+  A.rmsSm = lerp(A.rmsSm, A.rms, A.rms > A.rmsSm ? 0.4 : 0.06);
+
+  // bands (bin ≈ 23.4Hz @48k, fft 2048)
+  A.sub  = lerp(A.sub,  bandAvg(1,4),   0.3);   // ~23–110 Hz
+  A.bass = lerp(A.bass, bandAvg(2,8),   0.3);   // ~46–190 Hz
+  A.mid  = lerp(A.mid,  bandAvg(9,80),  0.25);  // ~200Hz–1.9k
+  A.high = lerp(A.high, bandAvg(81,420),0.25);  // ~1.9k–10k
+
+  // spectral centroid
+  let num=0, den=0;
+  for (let i=1;i<512;i++){ num += i*freqData[i]; den += freqData[i]; }
+  A.centroid = lerp(A.centroid, den>0 ? num/den/512 : 0, 0.15);
+
+  // spectral flux (full) + kick flux (low bins only)
+  let flux=0, kflux=0;
+  for (let i=1;i<512;i++){
+    const d = freqData[i]-prevFreq[i];
+    if (d>0){ flux += d; if (i<=9) kflux += d*2.2; }
+    prevFreq[i] = freqData[i];
+  }
+  A.flux = flux/512; A.kickFlux = kflux/10;
+
+  fluxHist.push(A.flux); if (fluxHist.length>50) fluxHist.shift();
+  kickHist.push(A.kickFlux); if (kickHist.length>50) kickHist.shift();
+  const favg = fluxHist.reduce((a,b)=>a+b,0)/fluxHist.length;
+  const kavg = kickHist.reduce((a,b)=>a+b,0)/kickHist.length;
+
+  // onset (any transient)
+  if (A.flux > favg*1.6 + 1.5 && now-lastOnset > 90 && A.rms > 0.01){
+    lastOnset = now;
+    A.onsetEnv = 1;
+    onOnset();
+  }
+  // kick (low-band transient, stricter)
+  if (A.kickFlux > kavg*1.5 + 6 && now-lastKick > 160 && A.bass > 0.25){
+    lastKick = now;
+    A.kickEnv = 1;
+    // crude bpm from kick intervals
+    A.bpmTaps.push(now);
+    if (A.bpmTaps.length>8) A.bpmTaps.shift();
+    if (A.bpmTaps.length>3){
+      const iv=[]; for(let i=1;i<A.bpmTaps.length;i++) iv.push(A.bpmTaps[i]-A.bpmTaps[i-1]);
+      iv.sort((a,b)=>a-b);
+      const med = iv[iv.length>>1];
+      if (med>250 && med<1200) A.bpm = Math.round(60000/med);
+    }
+    onKick();
+  }
+  A.kickEnv *= 0.90;
+  A.onsetEnv *= 0.86;
+
+  // track-relative intensity: how loud is NOW vs this song's own peaks?
+  // quiet intros stay thin; only drops/choruses reach full scale
+  A.peak = Math.max(A.peak * 0.9997, A.rmsSm, 0.03);
+  const rel = Math.min(1, A.rmsSm / (A.peak*0.85 + 1e-4));
+  A.intens = lerp(A.intens, Math.pow(rel, 1.9), 0.07);
+
+  // silence tracking
+  if (A.rms < 0.008) A.silentFrames++; else A.silentFrames = 0;
+  A.silent = A.silentFrames > 25;
+}
+
+/* ============================================================
+   STATE / EFFECTS
+   ============================================================ */
+const fx = { A:false, S:false, D:false, F:false, G:false, H:false, J:false, K:false, X:false };
+const fxAmt = { A:0, S:0, D:0, F:0, G:0, H:0, J:0, K:0, X:0 }; // eased intensities (0.1 lerp/frame)
+function easeFx(){ for (const k in fxAmt) fxAmt[k] = lerp(fxAmt[k], fx[k]?1:0, 0.1); }
+function resetFx(){
+  for (const k in fx) fx[k] = false; // fxAmt eases down on its own
+  mono = false;
+  bolts = []; particles = []; state.flash = 0;
+}
+const state = { stopped:true, flash:0, shakeX:0, shakeY:0, t:0 };
+
+const displayBuf = new Float32Array(FFT); // slo-mo interpolated waveform
+let bolts = [];      // lightning
+let particles = [];  // sparks
+let glitchSlices = [];
+
+function onKick(){
+  // electric discharge from the center — restrained when the song is quiet or K is on
+  const scale = (0.15 + A.intens*0.85) * (1 - 0.8*fxAmt.K);
+  const n = Math.round((1 + (Math.random()*2|0)) * scale);
+  for (let i=0;i<n;i++) spawnBolt(A.intens < 0.4);
+  state.shakeX = (Math.random()-0.5) * 14 * (0.5+A.bass) * scale;
+  state.shakeY = (Math.random()-0.5) * 10 * (0.5+A.bass) * scale;
+}
+function onOnset(){
+  const calm = 1 - fxAmt.K;
+  if (A.intens > 0.55 && Math.random() < 0.4*calm) burstParticles((6 + A.high*20)*calm);
+  if (Math.random() < 0.35*calm) spawnBolt(true);
+}
+
+function spawnBolt(small){
+  if (Math.random() < fxAmt.X) return; // X suppresses outward strikes (eased)
+  // electric discharge: crackling ray shooting outward from the center dot
+  const cx = W/2, cy = H/2;
+  const th = Math.random()*Math.PI*2;
+  const len = small ? 50+Math.random()*80 : (110+Math.random()*180) * (0.6+A.rmsSm*2);
+  const segs = 6 + Math.random()*8 | 0;
+  const spread = small ? 7 : 12 + A.kickEnv*16;   // sideways crackle
+  const dirx = Math.cos(th), diry = Math.sin(th);
+  const px = -diry, py = dirx;                     // perpendicular
+  const pts = [[cx,cy]];                           // always born at center
+  for (let i=1;i<=segs;i++){
+    const d = (i/segs)*len;
+    const side = (Math.random()-0.5)*spread * Math.min(1, i/2);
+    pts.push([cx + dirx*d + px*side, cy + diry*d + py*side]);
+  }
+  bolts.push({pts, life:small?0.6:0.85, w:small?0.8:1.4});
+  // thin parallel sub-arc, like a spark gap
+  if (!small && Math.random()<0.5){
+    const off = (Math.random()<0.5?-1:1)*(5+Math.random()*8);
+    const bpts = pts.filter((_,i)=>i%2===0).map(([bx,by])=>[bx+px*off, by+py*off]);
+    bolts.push({pts:bpts, life:0.5, w:0.7});
+  }
+}
+
+function burstParticles(n){
+  // sparks fly radially outward from the center
+  for (let i=0;i<n;i++){
+    const th = Math.random()*Math.PI*2;
+    const sp = 2 + Math.random()*7 + A.kickEnv*4;
+    particles.push({
+      x:W/2, y:H/2,
+      vx:Math.cos(th)*sp,
+      vy:Math.sin(th)*sp,
+      life:1, sz:1+Math.random()*2
+    });
+  }
+}
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+function drawGrid(){
+  const vis = 1 - fxAmt.G; // G toggles the grid off/on (eased)
+  if (vis < 0.02) return;
+  const alpha = (A.silent ? 0.03 : 0.05 + A.rmsSm*0.12) * vis;
+  stx.strokeStyle = `rgba(${GREEN},${alpha})`;
+  stx.lineWidth = 1;
+  const gs = 64;
+  stx.beginPath();
+  for (let x=(state.t*-8)%gs; x<W; x+=gs){ stx.moveTo(x,0); stx.lineTo(x,H); }
+  for (let y=0; y<H; y+=gs){ stx.moveTo(0,y); stx.lineTo(W,y); }
+  stx.stroke();
+  // center axis
+  stx.strokeStyle = `rgba(${GREEN},${alpha*2})`;
+  stx.beginPath(); stx.moveTo(0,H/2); stx.lineTo(W,H/2); stx.stroke();
+}
+
+const RADIAL_N = 240; // points around the circle
+function wavePoints(){
+  // radial oscillator: waveform wrapped 360° around screen center, sharp spikes
+  const cx = W/2, cy = H/2;
+  const maxR = Math.min(W,H) * 0.44;
+  const it = A.intens; // relative to the song's own peaks
+  const calm = 1 - fxAmt.K;   // K damps amplitude, jitter, chaos
+  const base = A.silent ? 1.5 : 2 + it * maxR * 0.22 + A.kickEnv * it * maxR * 0.06;
+  const amp  = (A.silent ? 2  : maxR * (0.045 + it*0.58 + A.kickEnv*it*0.28)) * (1 - 0.65*fxAmt.K);
+  const jag  = (A.high * 10 + A.onsetEnv * 8) * (0.25 + it*0.75) * calm*calm*calm; // electric jitter
+  const lerpK = lerp(0.85, 0.12, fxAmt.H) * (1 - 0.6*fxAmt.K); // slo-mo smear; K also steadies spikes
+  const step = (FFT / RADIAL_N) | 0;
+  const rot = state.t * 0.15;                      // slow drift so spikes don't sit still
+  const pts = [];
+
+  for (let i=0;i<RADIAL_N;i++){
+    let v = (timeData[i*step]-128)/128;
+    // freq-warp effect: displace by spectrum around the ring
+    displayBuf[i] = lerp(displayBuf[i], v, lerpK);
+    // signed radius: negative values shoot through the center to the far side
+    let r = base + displayBuf[i]*amp;
+    if (jag>0.5 && Math.random()<0.4) r += (Math.random()-0.5)*jag;
+    if (A.silent && Math.random()<0.004) r += Math.random()*22; // idle static blip
+    const th = (i/RADIAL_N)*Math.PI*2 + rot;
+    pts.push([cx + Math.cos(th)*r, cy + Math.sin(th)*r]);
+  }
+  pts.push(pts[0]); // close the loop
+  return pts;
+}
+
+function strokePath(ctx, pts, color, width, alpha, dx=0, dy=0){
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = width;
+  ctx.lineJoin = 'miter';
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0]+dx, pts[0][1]+dy);
+  for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0]+dx, pts[i][1]+dy);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
+/* F — orbital 3D: audio rings tumbling on precessing orbital planes */
+const ORB_N = 6, ORB_M = 96;
+let orbitals = null, orbFrame = 0;
+
+function drawWave(){
+  const cx = W/2, cy = H/2;
+  const pts = wavePoints();
+  stx.globalCompositeOperation = 'lighter';
+
+  if (fxAmt.F > 0.01){
+    if (!orbitals) orbitals = new Array(ORB_N).fill(null);
+    // staggered snapshots — each orbital carries a different time-slice of the song
+    if (orbFrame % 5 === 0){
+      const radii = new Float32Array(ORB_M);
+      for (let i=0;i<ORB_M;i++){
+        const p = pts[(i/ORB_M*RADIAL_N)|0];
+        radii[i] = Math.hypot(p[0]-cx, p[1]-cy);
+      }
+      orbitals[((orbFrame/5)|0) % ORB_N] = radii;
+    }
+    orbFrame++;
+
+    const f3 = 640; // focal length for perspective
+    for (let j=0;j<ORB_N;j++){
+      const data = orbitals[j]; if (!data) continue;
+      const ph = j * 2.39996; // golden-angle phase per orbital
+      // tumbling precession: two oscillating tilts, never a steady cliché spin
+      const ax = (0.55 + 0.5*Math.sin(state.t*0.21 + ph)) * 1.25 * fxAmt.F;
+      const ay = Math.sin(state.t*0.13 + ph*1.7) * 1.4 * fxAmt.F;
+      const cax=Math.cos(ax), sax=Math.sin(ax), cay=Math.cos(ay), say=Math.sin(ay);
+      const baseA = fxAmt.F * (1 - j/ORB_N*0.45);
+      stx.strokeStyle = `rgba(${GREEN},1)`;
+      stx.lineWidth = 1.3 + A.intens*0.8;
+      stx.shadowColor = `rgb(${GREEN})`;
+      stx.shadowBlur = 8;
+      for (let pass=0; pass<2; pass++){ // 0 = far side (dim), 1 = near side
+        stx.globalAlpha = (pass ? 0.65 : 0.20) * baseA;
+        stx.beginPath();
+        let pen = false;
+        for (let i=0;i<=ORB_M;i++){
+          const ii = i % ORB_M;
+          const th = ii/ORB_M*Math.PI*2;
+          const r = data[ii];
+          const x0 = Math.cos(th)*r, y0 = Math.sin(th)*r;
+          const y1 = y0*cax, z1 = y0*sax;          // tilt around X
+          const x2 = x0*cay + z1*say;              // precess around Y
+          const z2 = -x0*say + z1*cay;
+          const persp = f3/(f3+z2);
+          const X = cx + x2*persp, Y = cy + y1*persp;
+          if ((z2 <= 0) === (pass === 1)){ pen ? stx.lineTo(X,Y) : stx.moveTo(X,Y); pen = true; }
+          else pen = false;
+        }
+        stx.stroke();
+      }
+    }
+    stx.globalAlpha = 1;
+    stx.shadowBlur = 0;
+  } else if (orbitals){ orbitals = null; orbFrame = 0; }
+
+  if (fxAmt.A > 0.01){ // chromatic glitch (fades to gray ghosts in mono mode)
+    const off = (3 + A.onsetEnv*10 + state.flash*14) * fxAmt.A;
+    const cR = `rgba(255,${Math.round(40+215*monoAmt)},${Math.round(60+195*monoAmt)},0.9)`;
+    const cB = `rgba(${Math.round(40+215*monoAmt)},${Math.round(120+135*monoAmt)},255,0.9)`;
+    strokePath(stx, pts, cR, 1.5, 0.8*fxAmt.A, -off, 0);
+    strokePath(stx, pts, cB, 1.5, 0.8*fxAmt.A, off, 0);
+  }
+  // glow pass — thin & faint in quiet sections, blooms at peaks; K thins everything hard
+  const it = A.intens;
+  const calm = (1 - 0.85*fxAmt.K) * (1 - 0.35*fxAmt.F); // K thins; F steps back so orbitals read
+  stx.shadowColor = `rgb(${GREEN})`;
+  stx.shadowBlur = (6 + it*14 + A.kickEnv*it*30) * calm;
+  strokePath(stx, pts, `rgba(${GREEN},${(0.14 + it*0.25)*calm})`, Math.max(0.5, (1.2 + it*3.5 + A.kickEnv*it*4) * calm), 1);
+  // core
+  strokePath(stx, pts, `rgba(220,255,230,${0.6 + it*0.35})`, Math.max(0.45, (0.6 + it*1.1) * calm), 1);
+
+  // center dot — the anchor, always alive
+  const dotR = (A.silent ? 2.2 + Math.sin(state.t*2)*0.6 : 2 + it*12 + A.kickEnv*it*5) * (1 - 0.5*fxAmt.K);
+  stx.fillStyle = 'rgba(230,255,238,0.95)';
+  stx.beginPath(); stx.arc(cx, cy, dotR, 0, Math.PI*2); stx.fill();
+  stx.shadowBlur = 0;
+
+  // rays: connect center to the spikes on energetic bins
+  if (!A.silent){
+    stx.strokeStyle = `rgba(${GREEN},1)`;
+    stx.lineWidth = 0.7;
+    stx.beginPath();
+    for (let i=0;i<RADIAL_N;i+=4){
+      const m = freqData[(i/RADIAL_N*300)|0]/255;
+      if (m > 0.45 && Math.random() < m){
+        stx.moveTo(cx, cy);
+        stx.lineTo(pts[i][0], pts[i][1]);
+      }
+    }
+    stx.globalAlpha = (0.10 + A.kickEnv*0.25 + A.mid*0.15) * (0.2 + it*0.8) * (1 - 0.7*fxAmt.K);
+    stx.stroke();
+    stx.globalAlpha = 1;
+  }
+
+  // ghost ring — inner jagged echo on energy
+  if (!A.silent && (A.mid > 0.25 || A.kickEnv > 0.3)){
+    const gpts = pts.filter((_,i)=>i%2===0).map(([x,y])=>
+      [cx + (x-cx)*0.55 + (Math.random()-0.5)*5, cy + (y-cy)*0.55 + (Math.random()-0.5)*5]);
+    strokePath(stx, gpts, `rgba(${GREEN},0.9)`, 0.8, 0.18 + A.kickEnv*0.3);
+  }
+  stx.globalCompositeOperation = 'source-over';
+}
+
+function drawBolts(){
+  stx.globalCompositeOperation = 'lighter';
+  stx.shadowColor = `rgb(${GREEN})`;
+  for (const b of bolts){
+    stx.shadowBlur = 12;
+    strokePath(stx, b.pts, `rgba(${GREEN},1)`, b.w, b.life*0.9);
+    strokePath(stx, b.pts, 'rgba(235,255,240,1)', b.w*0.5, b.life);
+    b.life -= 0.09;
+  }
+  stx.shadowBlur = 0;
+  stx.globalCompositeOperation = 'source-over';
+  bolts = bolts.filter(b=>b.life>0);
+}
+
+function drawParticles(){
+  stx.globalCompositeOperation = 'lighter';
+  for (const p of particles){
+    stx.globalAlpha = p.life;
+    stx.fillStyle = `rgb(${GREEN})`;
+    stx.fillRect(p.x, p.y, p.sz, p.sz);
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.985; p.vy *= 0.985;   // drag, keeps burst radial
+    p.life -= 0.02;
+  }
+  stx.globalAlpha = 1;
+  stx.globalCompositeOperation = 'source-over';
+  particles = particles.filter(p=>p.life>0 && p.y<H+20);
+}
+
+function drawHUD(){
+  mtx.font = '10px "Courier New", monospace';
+  mtx.fillStyle = `rgba(${GREEN},0.75)`;
+  const pad = 16;
+  // top-left: source
+  mtx.fillText(`SRC ▸ ${state.stopped ? 'STANDBY' : trackName}`, pad, pad+8);
+  // top-right: metrics
+  const bpmStr = A.bpm ? `${A.bpm} BPM` : '--- BPM';
+  const line = `${bpmStr}  RMS ${(A.rmsSm*100|0).toString().padStart(3,'0')}  ${A.silent?'SILENCE':'SIGNAL '}`;
+  mtx.fillText(line, W - pad - mtx.measureText(line).width, pad+8);
+  // bottom: active fx
+  let fxs = '';
+  for (const k of ['A','S','D','F','G','H','J','K','X']) fxs += fx[k] ? ` [${k}]` : `  ${k} `;
+  fxs += mono ? ' [M]' : '  M ';
+  mtx.fillStyle = `rgba(${GREEN},0.4)`;
+  mtx.fillText('FX' + fxs, pad, H - pad);
+  // radiation readout bottom-right — dose accumulates from audio energy
+  if (!state.stopped){
+    rads += A.rmsSm * (1 + A.kickEnv*3) * 0.6;
+  }
+  const mw = 120;
+  const doseStr = `☢ ${(rads|0).toString().padStart(6,'0')} RADS`;
+  mtx.fillStyle = `rgba(${GREEN},0.75)`;
+  mtx.fillText(doseStr, W - pad - mw, H - pad - 14);
+  mtx.strokeStyle = `rgba(${GREEN},0.4)`;
+  mtx.strokeRect(W-pad-mw, H-pad-8, mw, 8);
+  // live exposure level, flickers hot on kicks
+  const expo = Math.min(1, A.rmsSm*3 + A.kickEnv*0.4);
+  mtx.fillStyle = `rgba(${GREEN},${0.55 + A.kickEnv*0.4})`;
+  mtx.fillRect(W-pad-mw+1, H-pad-7, expo*(mw-2), 6);
+}
+let rads = 0;
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+let lastFrame = performance.now();
+function frame(now){
+  requestAnimationFrame(frame);
+  state.t = now/1000;
+
+  if (analyser && !state.stopped) analyze(now);
+  else { A.rmsSm *= 0.94; A.kickEnv *= 0.9; A.onsetEnv *= 0.9; A.intens *= 0.94; A.silent = true; }
+  easeFx();
+  monoAmt = lerp(monoAmt, mono?1:0, 0.1);
+  for (let i=0;i<3;i++) GREEN[i] = Math.round(lerp(GREEN_BASE[i], MONO_BASE[i], monoAmt));
+
+  /* --- scene layer (with trails) --- */
+  const trail = Math.max(0.05, 0.30 - 0.24*fxAmt.S - 0.20*fxAmt.H);
+  stx.globalCompositeOperation = 'source-over';
+  stx.fillStyle = `rgba(0,0,0,${trail})`;
+  stx.fillRect(0,0,W,H);
+
+  drawGrid();
+  if (analyser) drawWave();
+  drawBolts();
+  drawParticles();
+
+  /* --- composite to main --- */
+  mtx.setTransform(DPR,0,0,DPR,0,0);
+  mtx.fillStyle = '#000';
+  mtx.fillRect(0,0,W,H);
+
+  state.shakeX *= 0.82; state.shakeY *= 0.82;
+  const sx = state.shakeX, sy = state.shakeY;
+
+  mtx.drawImage(scene, sx*DPR, sy*DPR, scene.width, scene.height, 0, 0, W, H);
+
+  if (fxAmt.D > 0.01){ // kaleidoscope — rotated copies spinning around the center
+    mtx.globalCompositeOperation = 'lighter';
+    const spin = state.t * 0.35;
+    const angles = [Math.PI*2/3, -Math.PI*2/3, Math.PI/3 + Math.sin(state.t*0.5)*0.3];
+    const alphas = [0.5, 0.5, 0.35];
+    for (let i=0;i<angles.length;i++){
+      mtx.globalAlpha = alphas[i] * fxAmt.D;
+      mtx.save();
+      mtx.translate(W/2, H/2);
+      mtx.rotate((angles[i] + (i===2 ? spin : -spin*0.5)) * fxAmt.D);
+      mtx.translate(-W/2, -H/2);
+      mtx.drawImage(scene, 0,0, scene.width, scene.height, 0,0, W, H);
+      mtx.restore();
+    }
+    mtx.globalAlpha = 1;
+    mtx.globalCompositeOperation = 'source-over';
+  }
+
+  /* --- disruption (space) --- */
+  if (state.flash > 0.01){
+    // slice tear
+    const slices = 6;
+    for (let i=0;i<slices;i++){
+      const y = Math.random()*H;
+      const hgt = 10+Math.random()*50;
+      const shift = (Math.random()-0.5)*120*state.flash;
+      mtx.drawImage(main, 0, y*DPR, main.width, hgt*DPR, shift, y, W, hgt);
+    }
+    mtx.fillStyle = `rgba(200,255,215,${state.flash*0.55})`;
+    mtx.fillRect(0,0,W,H);
+    state.flash *= 0.82;
+  }
+
+  /* --- scanlines + vignette --- */
+  mtx.fillStyle = mtx.createPattern(scanCanvas,'repeat');
+  mtx.fillRect(0,0,W,H);
+  const vg = mtx.createRadialGradient(W/2,H/2,H*0.35, W/2,H/2, Math.max(W,H)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.55)');
+  mtx.fillStyle = vg;
+  mtx.fillRect(0,0,W,H);
+
+  /* --- invert (J) --- */
+  if (fxAmt.J > 0.01){
+    mtx.globalCompositeOperation = 'difference';
+    mtx.globalAlpha = fxAmt.J;
+    mtx.fillStyle = '#fff';
+    mtx.fillRect(0,0,W,H);
+    mtx.globalAlpha = 1;
+    mtx.globalCompositeOperation = 'source-over';
+  }
+
+  drawHUD();
+}
+requestAnimationFrame(frame);
+
+/* ============================================================
+   INPUT
+   ============================================================ */
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k==='r'){ resetFx(); return; } // works anytime, even with menu open
+  // while the selection menu is open, keys drive the menu only
+  if (boot.style.display !== 'none'){
+    if (k==='enter' && trackSelect.style.display === 'block'){ e.preventDefault(); playTrack(trackSelect.value); }
+    else if (k==='escape') hideBoot();
+    return;
+  }
+  if (k===' '){ e.preventDefault(); state.flash = 1; onKick(); spawnBolt(); spawnBolt(); burstParticles(24); return; }
+  if (k==='m'){ mono = !mono; return; }
+  if (k==='enter'){
+    if (state.stopped){ // resume
+      if (inputMode === 'mic'){ startMic(); }
+      else if (audio.src){ ensureCtx(); audio.play().catch(()=>{}); state.stopped = false; }
+    } else { // pause
+      audio.pause();
+      if (micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
+      state.stopped = true;
+    }
+    return;
+  }
+  if (k==='1'){ openMenu(); return; }
+  if (k==='2' || k==='3'){
+    const f = HOTKEY_TRACKS[+k-1];
+    if (f) playTrack(f);
+    return;
+  }
+  const map = {a:'A',s:'S',d:'D',f:'F',g:'G',h:'H',j:'J',k:'K',x:'X'};
+  if (map[k]) fx[map[k]] = !fx[map[k]];
+});
+
+/* ============================================================
+   BOOT UI
+   ============================================================ */
+const boot = document.getElementById('boot');
+const trackSelect = document.getElementById('trackSelect');
+const fileInput = document.getElementById('fileInput');
+function hideBoot(){ boot.style.display = 'none'; }
+function openMenu(){
+  boot.style.display = 'flex';
+  trackSelect.style.display = 'block';
+  trackSelect.focus();
+}
+
+PROJECT_TRACKS.forEach(t => {
+  const o = document.createElement('option');
+  o.value = t; o.textContent = '▸ ' + t.replace(/\.\w+$/,'').toUpperCase();
+  trackSelect.appendChild(o);
+});
+trackSelect.value = 'faraway.mp3';
+
+document.getElementById('btnProject').onclick = () => {
+  trackSelect.style.display = trackSelect.style.display === 'block' ? 'none' : 'block';
+};
+trackSelect.onchange = () => playTrack(trackSelect.value);
+trackSelect.ondblclick = () => playTrack(trackSelect.value);
+
+document.getElementById('btnUpload').onclick = () => fileInput.click();
+fileInput.onchange = () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+  uploadName = f.name.replace(/\.\w+$/,'').toUpperCase();
+  playTrack(URL.createObjectURL(f));
+};
+
+document.getElementById('btnMic').onclick = startMic;
+</script>
+</body>
+</html>
