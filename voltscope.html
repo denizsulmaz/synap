@@ -80,7 +80,7 @@
 
     <div class="keys">
       <b>A</b> GLITCH &nbsp;<b>S</b> TRAILS &nbsp;<b>D</b> KALEIDO &nbsp;<b>F</b> 3D DEPTH &nbsp;<b>G</b> GRID &nbsp;<b>H</b> SLO-MO &nbsp;<b>J</b> INVERT &nbsp;<b>K</b> CALM &nbsp;<b>X</b> NO ARCS &nbsp;<b>M</b> MONO<br>
-      <b>SPACE</b> DISRUPT &nbsp;&nbsp;<b>R</b> RESET FX &nbsp;&nbsp;<b>1</b> MENU &nbsp;&nbsp;<b>2-3</b> TRACK &nbsp;&nbsp;<b>ENTER</b> PAUSE/RESUME
+      <b>SHIFT</b> AUTO &nbsp;&nbsp;<b>↑↓</b> VOLUME &nbsp;&nbsp;<b>SPACE</b> DISRUPT &nbsp;&nbsp;<b>R</b> RESET FX &nbsp;&nbsp;<b>1</b> MENU &nbsp;&nbsp;<b>2-3</b> TRACK &nbsp;&nbsp;<b>ENTER</b> PAUSE/RESUME
     </div>
   </div>
 </div>
@@ -133,7 +133,7 @@ resize();
 /* ============================================================
    AUDIO ENGINE
    ============================================================ */
-let actx=null, analyser=null, mediaSrc=null, micSrc=null, micStream=null;
+let actx=null, analyser=null, mediaSrc=null, micSrc=null, micStream=null, masterGain=null;
 const audio = new Audio();
 audio.loop = true;
 
@@ -146,7 +146,10 @@ function ensureCtx(){
     analyser = actx.createAnalyser();
     analyser.fftSize = FFT;
     analyser.smoothingTimeConstant = 0;
-    analyser.connect(actx.destination); // will be disconnected for mic
+    masterGain = actx.createGain();     // volume sits AFTER the analyser
+    masterGain.gain.value = volume;     // so the viz ignores the volume level
+    masterGain.connect(actx.destination);
+    analyser.connect(masterGain);       // will be disconnected for mic
     timeData = new Uint8Array(FFT);
     freqData = new Uint8Array(FFT/2);
     prevFreq = new Uint8Array(FFT/2);
@@ -162,7 +165,7 @@ function playTrack(file){
   if (micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
   if (micSrc){ try{micSrc.disconnect();}catch(e){} micSrc=null; }
   try { analyser.disconnect(); } catch(e){}
-  analyser.connect(actx.destination);
+  analyser.connect(masterGain);
   if (!mediaSrc){
     mediaSrc = actx.createMediaElementSource(audio);
   }
@@ -265,6 +268,7 @@ function analyze(now){
   // kick (low-band transient, stricter)
   if (A.kickFlux > kavg*1.5 + 6 && now-lastKick > 160 && A.bass > 0.25){
     lastKick = now;
+    AD.kicks.push(now); // auto-director tracks kick density
     A.kickEnv = 1;
     // crude bpm from kick intervals
     A.bpmTaps.push(now);
@@ -297,7 +301,81 @@ function analyze(now){
 const fx = { A:false, S:false, D:false, F:false, G:false, H:false, J:false, K:false, X:false };
 const fxAmt = { A:0, S:0, D:0, F:0, G:0, H:0, J:0, K:0, X:0 }; // eased intensities (0.1 lerp/frame)
 function easeFx(){ for (const k in fxAmt) fxAmt[k] = lerp(fxAmt[k], fx[k]?1:0, 0.1); }
+/* ---------- AUTO MODE (Shift): a structure-aware director ----------
+   Classifies the song into sections (intro/build/hype/bridge/groove/outro)
+   with hysteresis, casts one FX scene per section, evolves it slowly. */
+let autoMode = false, lastAutoT = 0;
+const AD = { section:'', since:0, eFast:0, eSlow:0, pending:'', pendCount:0,
+             kicks:[], varT:0, dOff:0, jOff:0 };
+
+function autoDirect(now){
+  AD.eFast = lerp(AD.eFast, A.intens, 0.35);  // ~1s feel
+  AD.eSlow = lerp(AD.eSlow, A.intens, 0.05);  // ~8s feel
+  const slope = AD.eFast - AD.eSlow;           // >0 building, <0 cooling
+  AD.kicks = AD.kicks.filter(t => now - t < 4000);
+  const kd = AD.kicks.length;                  // kick density (4s window)
+  const pos = (inputMode==='track' && audio.duration) ? audio.currentTime : 1e9;
+  const nearEnd = inputMode==='track' && audio.duration &&
+                  (audio.duration - audio.currentTime) < 25;
+
+  let target;
+  if (A.silent)                          target = 'silence';
+  else if (nearEnd && AD.eFast < 0.55)   target = 'outro';
+  else if (AD.eFast > 0.72 && kd >= 5)   target = 'hype'; // only the real peaks
+  else if (slope > 0.055 && AD.eFast > 0.18) target = 'build';
+  else if (pos < 20 && AD.eSlow < 0.35)  target = 'intro';
+  else if (AD.eFast < 0.32 && kd <= 1)   target = 'bridge';
+  else                                   target = 'groove';
+
+  // hysteresis: a section must prove itself; drops hit instantly
+  const dropHit = target==='hype' && (AD.section==='build' || AD.section==='groove');
+  if (target !== AD.section){
+    if (target === AD.pending) AD.pendCount++;
+    else { AD.pending = target; AD.pendCount = 1; }
+    const sustained = AD.pendCount >= (dropHit ? 1 : 6);         // 6×250ms = 1.5s
+    const dwelt = (now - AD.since) > 4000 || dropHit || !AD.section;
+    if (sustained && dwelt) enterSection(target, now, dropHit);
+  } else AD.pendCount = 0;
+
+  // time-boxed accents expire
+  if (fx.D && now > AD.dOff) fx.D = false;
+  if (fx.J && now > AD.jOff) fx.J = false;
+
+  // slow evolution inside long sections — one gentle change, not a re-roll
+  if (now - AD.varT > 8000){
+    AD.varT = now;
+    const age = now - AD.since;
+    if (AD.section==='intro' && age > 12000) fx.F = true;        // intro blooms late
+    else if (AD.section==='groove') fx.F = !fx.F;                // breathe depth in/out
+    else if (AD.section==='hype' && Math.random() < 0.35){       // rare invert stab
+      fx.J = true; AD.jOff = now + 450;
+    }
+  }
+}
+
+function enterSection(s, now, dropHit){
+  AD.section = s; AD.since = now; AD.pendCount = 0; AD.varT = now;
+  const w = {A:0,S:0,D:0,F:0,H:0,J:0,K:0,X:0};
+  switch(s){
+    case 'silence':
+    case 'intro':  w.K=1; w.X=1; w.S=1; break;                   // thin, patient
+    case 'build':  w.S=1; w.F=1; break;                          // trails + depth swell
+    case 'hype':   w.A=Math.random()<0.65?1:0; w.S=Math.random()<0.3?1:0; // aggressive, not constant
+                   if (Math.random()<0.25){ w.D=1; AD.dOff=now+5000; } // kaleido: rare, 5s max
+                   break;
+    case 'bridge': w.S=1; w.H=1; w.X=1; w.K=1;                   // suspended, thin
+                   w.F=Math.random()<0.5?1:0; break;
+    case 'groove': w.S=Math.random()<0.5?1:0; w.F=Math.random()<0.4?1:0;
+                   w.A=Math.random()<0.15?1:0;
+                   w.K=AD.eFast<0.45 && Math.random()<0.5?1:0;   // calm grooves stay thin
+                   break;
+    case 'outro':  w.K=1; w.S=1; w.F=1; w.X=1; break;            // long fade feel
+  }
+  if (dropHit){ state.flash = 0.9; spawnBolt(); spawnBolt(); burstParticles(20); }
+  for (const k in w) fx[k] = !!w[k];   // G (grid) and mono stay yours
+}
 function resetFx(){
+  autoMode = false;
   for (const k in fx) fx[k] = false; // fxAmt eases down on its own
   mono = false;
   bolts = []; particles = []; state.flash = 0;
@@ -559,12 +637,41 @@ function drawParticles(){
   particles = particles.filter(p=>p.life>0 && p.y<H+20);
 }
 
+let volume = 1, volShownAt = -1e9;
+
+function drawVolume(){
+  // segmented phosphor volume column, right edge — appears on change, fades out
+  const age = performance.now() - volShownAt;
+  if (age > 2600) return;
+  const fade = age < 2000 ? 1 : 1 - (age-2000)/600;
+  const segs = 20, segH = 9, segW = 26, gap = 4;
+  const x = W - 58;
+  const totalH = segs*(segH+gap) - gap;
+  const y0 = (H - totalH)/2;
+  const lit = Math.round(volume*segs);
+  for (let i=0;i<segs;i++){
+    const y = y0 + (segs-1-i)*(segH+gap);
+    if (i < lit){
+      mtx.fillStyle = `rgba(${GREEN},${(0.35 + 0.5*(i/segs))*fade})`;
+      mtx.fillRect(x, y, segW, segH);
+    } else {
+      mtx.strokeStyle = `rgba(${GREEN},${0.18*fade})`;
+      mtx.strokeRect(x+0.5, y+0.5, segW-1, segH-1);
+    }
+  }
+  mtx.font = '10px "Courier New", monospace';
+  mtx.fillStyle = `rgba(${GREEN},${0.75*fade})`;
+  const label = `VOL ${String(Math.round(volume*100)).padStart(3,'0')}`;
+  mtx.fillText(label, x + segW/2 - mtx.measureText(label).width/2, y0 + totalH + 18);
+}
+
 function drawHUD(){
+  drawVolume();
   mtx.font = '10px "Courier New", monospace';
   mtx.fillStyle = `rgba(${GREEN},0.75)`;
   const pad = 16;
   // top-left: source
-  mtx.fillText(`SRC ▸ ${state.stopped ? 'STANDBY' : trackName}`, pad, pad+8);
+  mtx.fillText(`SRC ▸ ${state.stopped ? 'STANDBY' : trackName}${autoMode ? `  ◈ AUTO▸${AD.section.toUpperCase()}` : ''}`, pad, pad+8);
   // top-right: metrics
   const bpmStr = A.bpm ? `${A.bpm} BPM` : '--- BPM';
   const line = `${bpmStr}  RMS ${(A.rmsSm*100|0).toString().padStart(3,'0')}  ${A.silent?'SILENCE':'SIGNAL '}`;
@@ -602,6 +709,10 @@ function frame(now){
 
   if (analyser && !state.stopped) analyze(now);
   else { A.rmsSm *= 0.94; A.kickEnv *= 0.9; A.onsetEnv *= 0.9; A.intens *= 0.94; A.silent = true; }
+  if (autoMode && !state.stopped && now - lastAutoT > 250){
+    lastAutoT = now;
+    autoDirect(now);
+  }
   easeFx();
   monoAmt = lerp(monoAmt, mono?1:0, 0.1);
   for (let i=0;i<3;i++) GREEN[i] = Math.round(lerp(GREEN_BASE[i], MONO_BASE[i], monoAmt));
@@ -688,11 +799,23 @@ requestAnimationFrame(frame);
    ============================================================ */
 addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
+  if (e.key === 'Shift' && !e.repeat){ // auto mode: the music drives the FX
+    autoMode = !autoMode;
+    if (autoMode){ lastAutoT = 0; AD.section=''; AD.pending=''; AD.pendCount=0; AD.eFast=A.intens; AD.eSlow=A.intens; }
+    return;
+  }
   if (k==='r'){ resetFx(); return; } // works anytime, even with menu open
   // while the selection menu is open, keys drive the menu only
   if (boot.style.display !== 'none'){
     if (k==='enter' && trackSelect.style.display === 'block'){ e.preventDefault(); playTrack(trackSelect.value); }
     else if (k==='escape') hideBoot();
+    return;
+  }
+  if (k==='arrowup' || k==='arrowdown'){
+    e.preventDefault();
+    volume = Math.min(1, Math.max(0, volume + (k==='arrowup' ? 0.05 : -0.05)));
+    if (masterGain) masterGain.gain.setTargetAtTime(volume, actx.currentTime, 0.03);
+    volShownAt = performance.now();
     return;
   }
   if (k===' '){ e.preventDefault(); state.flash = 1; onKick(); spawnBolt(); spawnBolt(); burstParticles(24); return; }
@@ -715,7 +838,10 @@ addEventListener('keydown', e => {
     return;
   }
   const map = {a:'A',s:'S',d:'D',f:'F',g:'G',h:'H',j:'J',k:'K',x:'X'};
-  if (map[k]) fx[map[k]] = !fx[map[k]];
+  if (map[k]){
+    if (map[k] !== 'G') autoMode = false; // manual FX takes the wheel back
+    fx[map[k]] = !fx[map[k]];
+  }
 });
 
 /* ============================================================
